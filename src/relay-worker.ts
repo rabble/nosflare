@@ -19,7 +19,7 @@ const {
 } = config;
 
 // Archive configuration constants
-const ARCHIVE_RETENTION_DAYS = 90;
+const ARCHIVE_RETENTION_DAYS = 7300; // ~20 years to keep backdated Vine content in D1
 const ARCHIVE_BATCH_SIZE = 10;
 
 // Query optimization constants
@@ -1059,12 +1059,13 @@ async function queryEvents(filters: NostrFilter[], bookmark: string, env: Env): 
       }
 
       // For filters with no time bounds and broad criteria, add default time window
-      if (!filter.since && !filter.until) {
-        // Default to last 7 days for unbounded queries
-        const sevenDaysAgo = Math.floor(Date.now() / 1000) - (DEFAULT_TIME_WINDOW_DAYS * 24 * 60 * 60);
-        filter.since = sevenDaysAgo;
-        console.log(`Added default ${DEFAULT_TIME_WINDOW_DAYS}-day time bound to unbounded query`);
-      }
+      // DISABLED: We need to support old Vine videos from 2013-2017 with original timestamps
+      // if (!filter.since && !filter.until) {
+      //   // Default to last 7 days for unbounded queries
+      //   const sevenDaysAgo = Math.floor(Date.now() / 1000) - (DEFAULT_TIME_WINDOW_DAYS * 24 * 60 * 60);
+      //   filter.since = sevenDaysAgo;
+      //   console.log(`Added default ${DEFAULT_TIME_WINDOW_DAYS}-day time bound to unbounded query`);
+      // }
 
       // Check if any array in the filter exceeds chunk size
       const needsChunking = (
@@ -2007,176 +2008,161 @@ function serveLandingPage(): Response {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="A serverless Nostr relay through Cloudflare Worker and D1 database" />
-    <title>Nosflare - Nostr Relay</title>
+    <meta name="description" content="A free, open Nostr relay for the Divine Video community" />
+    <title>Divine Video Relay - Nostr Relay</title>
+    <link href="https://fonts.googleapis.com/css2?family=Pacifico&display=swap" rel="stylesheet">
     <style>
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-        
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            background-color: #0a0a0a;
-            color: #ffffff;
+            background-color: #ffffff;
+            color: #333333;
             min-height: 100vh;
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            position: relative;
-            overflow: hidden;
+            padding: 2rem;
         }
-        
-        body::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: radial-gradient(circle at 20% 50%, rgba(255, 69, 0, 0.1) 0%, transparent 50%),
-                        radial-gradient(circle at 80% 50%, rgba(255, 140, 0, 0.1) 0%, transparent 50%),
-                        radial-gradient(circle at 50% 100%, rgba(255, 0, 0, 0.05) 0%, transparent 50%);
-            animation: pulse 10s ease-in-out infinite;
-            z-index: -1;
-        }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 0.7; }
-            50% { opacity: 1; }
-        }
-        
+
         .container {
             text-align: center;
             padding: 2rem;
             max-width: 600px;
-            z-index: 1;
+            width: 100%;
         }
-        
+
         .logo {
-            width: 400px;
-            height: auto;
-            filter: drop-shadow(0 0 30px rgba(255, 69, 0, 0.5));
+            font-family: 'Pacifico', cursive;
+            font-size: 4rem;
+            color: #00BFA5;
+            margin-bottom: 0.5rem;
+            text-decoration: none;
         }
-        
+
         .tagline {
-            font-size: 1.2rem;
-            color: #999;
+            font-size: 1.1rem;
+            color: #666;
             margin-bottom: 3rem;
+            font-weight: 400;
         }
-        
-        .info-box, .pay-section {
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(255, 255, 255, 0.1);
+
+        .info-box {
+            background: #ffffff;
+            border: 1px solid #e0e0e0;
             border-radius: 12px;
             padding: 2rem;
             margin-bottom: 2rem;
-            backdrop-filter: blur(10px);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
         }
-        
-        .pay-button {
-            background: none;
-            border: none;
-            cursor: pointer;
-            padding: 0;
-            margin: 1rem 0;
-            transition: transform 0.3s ease;
-        }
-        
-        .pay-button:hover {
-            transform: scale(1.05);
-        }
-        
-        .price-info {
-            font-size: 1.2rem;
-            color: #ff8c00;
-            font-weight: 600;
-        }
-        
+
         .url-display {
-            background: rgba(0, 0, 0, 0.5);
-            border: 1px solid rgba(255, 69, 0, 0.3);
+            background: #f5f5f5;
+            border: 1px solid #e0e0e0;
             border-radius: 8px;
             padding: 1rem;
             font-family: 'Courier New', monospace;
-            font-size: 1.1rem;
-            color: #ff8c00;
+            font-size: 1rem;
+            color: #00BFA5;
             margin: 1rem 0;
             word-break: break-all;
             cursor: pointer;
             transition: all 0.3s ease;
         }
-        
+
         .url-display:hover {
-            border-color: #ff4500;
-            background: rgba(255, 69, 0, 0.1);
+            border-color: #00BFA5;
+            background: #f0fffe;
         }
-        
+
         .copy-hint {
+            font-size: 0.85rem;
+            color: #999;
+            margin-top: 0.5rem;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 1rem;
+            margin-top: 2rem;
+        }
+
+        .stat-item {
+            background: #ffffff;
+            border: 1px solid #e0e0e0;
+            border-radius: 12px;
+            padding: 1.5rem 1rem;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        }
+
+        .stat-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: #00BFA5;
+        }
+
+        .stat-label {
             font-size: 0.9rem;
             color: #666;
             margin-top: 0.5rem;
         }
-        
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 1rem;
-            margin-top: 2rem;
-        }
-        
-        .stat-item {
-            background: rgba(255, 255, 255, 0.02);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 8px;
-            padding: 1rem;
-        }
-        
-        .stat-value {
-            font-size: 1.5rem;
-            font-weight: 700;
-            color: #ff4500;
-        }
-        
-        .stat-label {
-            font-size: 0.9rem;
-            color: #999;
-            margin-top: 0.25rem;
-        }
-        
+
         .links {
             margin-top: 3rem;
             display: flex;
-            gap: 2rem;
+            gap: 1.5rem;
             justify-content: center;
             flex-wrap: wrap;
         }
-        
+
         .link {
-            color: #ff8c00;
+            color: #00BFA5;
             text-decoration: none;
             font-size: 1rem;
-            transition: color 0.3s ease;
+            transition: all 0.3s ease;
+            font-weight: 500;
+            padding: 0.75rem 1.5rem;
+            border: 2px solid #00BFA5;
+            border-radius: 24px;
+            background: transparent;
         }
-        
+
         .link:hover {
-            color: #ff4500;
+            color: #ffffff;
+            background: #00BFA5;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 191, 165, 0.3);
         }
-        
+
+        .link.primary {
+            background: #00BFA5;
+            color: #ffffff;
+        }
+
+        .link.primary:hover {
+            background: #00897B;
+            border-color: #00897B;
+        }
+
         .toast {
             position: fixed;
             bottom: 2rem;
-            background: #ff4500;
+            background: #00BFA5;
             color: white;
             padding: 1rem 2rem;
-            border-radius: 8px;
+            border-radius: 24px;
             transform: translateY(100px);
             transition: transform 0.3s ease;
             z-index: 1000;
+            box-shadow: 0 4px 12px rgba(0, 191, 165, 0.3);
         }
-        
+
         .toast.show {
             transform: translateY(0);
         }
@@ -2184,25 +2170,43 @@ function serveLandingPage(): Response {
 </head>
 <body>
     <div class="container">
-        <img src="https://nosflare.com/images/nosflare.png" alt="Nosflare Logo" class="logo">
-        <p class="tagline">A serverless Nostr relay powered by Cloudflare</p>
-        
+        <div class="logo">diVine Relay</div>
+        <p class="tagline">Short-form video relay for authentic, human-created content</p>
+
+        <div class="info-box">
+            <h2 style="font-size: 1.3rem; color: #00BFA5; margin-bottom: 1rem; font-weight: 600;">What is Divine Video?</h2>
+            <p style="color: #666; line-height: 1.6; margin-bottom: 1rem;">
+                This relay is dedicated to hosting <strong>6-second short-form videos</strong> from the Divine Video app.
+                Each video is verified using <strong>ProofMode</strong> to ensure authenticity — proving they're real,
+                live-shot moments captured by humans, not AI-generated content.
+            </p>
+            <p style="color: #666; line-height: 1.6;">
+                Connect your Nostr client to access a feed of genuine, creative micro-videos from the Divine Video community.
+            </p>
+        </div>
+
         ${payToRelaySection}
         
         <div class="stats">
             <div class="stat-item">
-                <div class="stat-value">${relayInfo.supported_nips.length}</div>
-                <div class="stat-label">Supported NIPs</div>
+                <div class="stat-value">6 sec</div>
+                <div class="stat-label">Max Video Length</div>
             </div>
             <div class="stat-item">
-                <div class="stat-value">${relayInfo.version}</div>
-                <div class="stat-label">Version</div>
+                <div class="stat-value">✓</div>
+                <div class="stat-label">ProofMode Verified</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value">${relayInfo.supported_nips.length}</div>
+                <div class="stat-label">Supported NIPs</div>
             </div>
         </div>
         
         <div class="links">
-            <a href="https://github.com/Spl0itable/nosflare" class="link" target="_blank">GitHub</a>
-            <a href="https://nostr.com" class="link" target="_blank">Learn about Nostr</a>
+            <a href="https://divine.video" class="link primary" target="_blank">Get the App</a>
+            <a href="https://divine.video/about" class="link" target="_blank">About Divine Video</a>
+            <a href="https://divine.video/proofmode" class="link" target="_blank">What is ProofMode?</a>
+            <a href="https://divine.video/nostr" class="link" target="_blank">About Nostr</a>
         </div>
     </div>
     
