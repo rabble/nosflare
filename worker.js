@@ -2919,8 +2919,7 @@ var MIGRATIONS = [
           reposts INTEGER NOT NULL DEFAULT 0,
           views INTEGER NOT NULL DEFAULT 0,
           avg_completion INTEGER NOT NULL DEFAULT 0,
-          hashtag TEXT,
-          FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+          hashtag TEXT
         )
       `).run();
       console.log("Created videos table");
@@ -3487,6 +3486,35 @@ async function saveEventToD1(event, env) {
         INSERT INTO content_hashes (hash, event_id, pubkey, created_at)
         VALUES (?, ?, ?, ?)
       `).bind(contentHash, event.id, event.pubkey, event.created_at).run();
+    }
+    if (event.kind === 34236) {
+      try {
+        const getTagValue = /* @__PURE__ */ __name((tagName) => {
+          const tag = event.tags.find((t) => t[0] === tagName);
+          return tag && tag[1] ? parseInt(tag[1], 10) || 0 : 0;
+        }, "getTagValue");
+        const loopCount = getTagValue("loops");
+        const likes = getTagValue("likes");
+        const comments = getTagValue("comments");
+        const reposts = getTagValue("reposts");
+        const views = getTagValue("views");
+        const tTags = event.tags.filter((t) => t[0] === "t");
+        const hashtag = tTags.length > 0 ? tTags[0][1] : null;
+        await session.prepare(`
+          INSERT INTO videos (event_id, author, created_at, loop_count, likes, comments, reposts, views, avg_completion, hashtag)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+          ON CONFLICT(event_id) DO UPDATE SET
+            loop_count = excluded.loop_count,
+            likes = excluded.likes,
+            comments = excluded.comments,
+            reposts = excluded.reposts,
+            views = excluded.views,
+            hashtag = excluded.hashtag
+        `).bind(event.id, event.pubkey, event.created_at, loopCount, likes, comments, reposts, views, hashtag).run();
+        console.log(`Video metrics saved for event ${event.id}`);
+      } catch (videoError) {
+        console.error(`Error saving video metrics for ${event.id}:`, videoError.message);
+      }
     }
     console.log(`Event ${event.id} saved successfully to D1.`);
     return { success: true, message: "Event received successfully for processing" };

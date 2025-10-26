@@ -23,8 +23,7 @@ export default {
           reposts INTEGER NOT NULL DEFAULT 0,
           views INTEGER NOT NULL DEFAULT 0,
           avg_completion INTEGER NOT NULL DEFAULT 0,
-          hashtag TEXT,
-          FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+          hashtag TEXT
         )
       `).run();
 
@@ -122,13 +121,14 @@ export default {
           console.error(`Error processing event ${eventId}:`, err.message, err.stack);
           stats.errors++;
 
-          // Log first error details for debugging
-          if (stats.errors === 1) {
-            console.error('First error details:', {
+          // Log first 5 errors details for debugging
+          if (stats.errors <= 5) {
+            console.error(`Error ${stats.errors} details:`, {
               eventId,
               author,
               createdAt,
-              error: err.message
+              error: err.message,
+              stack: err.stack
             });
           }
         }

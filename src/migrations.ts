@@ -41,8 +41,7 @@ export const MIGRATIONS: Migration[] = [
           reposts INTEGER NOT NULL DEFAULT 0,
           views INTEGER NOT NULL DEFAULT 0,
           avg_completion INTEGER NOT NULL DEFAULT 0,
-          hashtag TEXT,
-          FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+          hashtag TEXT
         )
       `).run();
 

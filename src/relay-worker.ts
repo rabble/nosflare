@@ -602,6 +602,45 @@ async function saveEventToD1(event: NostrEvent, env: Env): Promise<{ success: bo
       `).bind(contentHash, event.id, event.pubkey, event.created_at).run();
     }
 
+    // Populate videos table for kind 34236 (video events)
+    if (event.kind === 34236) {
+      try {
+        // Extract metrics from tags
+        const getTagValue = (tagName: string): number => {
+          const tag = event.tags.find(t => t[0] === tagName);
+          return tag && tag[1] ? parseInt(tag[1], 10) || 0 : 0;
+        };
+
+        const loopCount = getTagValue('loops');
+        const likes = getTagValue('likes');
+        const comments = getTagValue('comments');
+        const reposts = getTagValue('reposts');
+        const views = getTagValue('views');
+
+        // Extract first hashtag (from 't' tags)
+        const tTags = event.tags.filter(t => t[0] === 't');
+        const hashtag = tTags.length > 0 ? tTags[0][1] : null;
+
+        // Upsert into videos table (no foreign key constraint to avoid issues)
+        await session.prepare(`
+          INSERT INTO videos (event_id, author, created_at, loop_count, likes, comments, reposts, views, avg_completion, hashtag)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+          ON CONFLICT(event_id) DO UPDATE SET
+            loop_count = excluded.loop_count,
+            likes = excluded.likes,
+            comments = excluded.comments,
+            reposts = excluded.reposts,
+            views = excluded.views,
+            hashtag = excluded.hashtag
+        `).bind(event.id, event.pubkey, event.created_at, loopCount, likes, comments, reposts, views, hashtag).run();
+
+        console.log(`Video metrics saved for event ${event.id}`);
+      } catch (videoError: any) {
+        // Don't fail the whole event if video metrics fail
+        console.error(`Error saving video metrics for ${event.id}:`, videoError.message);
+      }
+    }
+
     console.log(`Event ${event.id} saved successfully to D1.`);
     return { success: true, message: "Event received successfully for processing" };
 
