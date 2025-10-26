@@ -436,13 +436,14 @@ export class RelayWebSocket implements DurableObject {
       }
 
       // Rate limiting (skip for excluded kinds)
-      if (!excludedRateLimitKinds.has(event.kind)) {
-        if (!session.pubkeyRateLimiter.removeToken()) {
-          console.log(`Rate limit exceeded for pubkey ${event.pubkey}`);
-          this.sendOK(session.webSocket, event.id, false, 'rate-limited: slow down there chief');
-          return;
-        }
-      }
+      // DISABLED: Temporarily disabled to allow bulk Vine video imports
+      // if (!excludedRateLimitKinds.has(event.kind)) {
+      //   if (!session.pubkeyRateLimiter.removeToken()) {
+      //     console.log(`Rate limit exceeded for pubkey ${event.pubkey}`);
+      //     this.sendOK(session.webSocket, event.id, false, 'rate-limited: slow down there chief');
+      //     return;
+      //   }
+      // }
 
       // Verify signature
       const isValidSignature = await verifyEventSignature(event);
@@ -538,11 +539,12 @@ export class RelayWebSocket implements DurableObject {
     }
 
     // Rate limiting
-    if (!session.reqRateLimiter.removeToken()) {
-      console.error(`REQ rate limit exceeded for subscription: ${subscriptionId}`);
-      this.sendClosed(session.webSocket, subscriptionId, 'rate-limited: slow down there chief');
-      return;
-    }
+    // DISABLED: Temporarily disabled to allow bulk Vine video imports and queries
+    // if (!session.reqRateLimiter.removeToken()) {
+    //   console.error(`REQ rate limit exceeded for subscription: ${subscriptionId}`);
+    //   this.sendClosed(session.webSocket, subscriptionId, 'rate-limited: slow down there chief');
+    //   return;
+    // }
 
     // Validate filters
     if (filters.length === 0) {

@@ -132,7 +132,27 @@ async function initializeDatabase(db: D1Database): Promise<void> {
         created_at INTEGER NOT NULL,
         FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
       )`,
-      `CREATE INDEX IF NOT EXISTS idx_content_hashes_pubkey ON content_hashes(pubkey)`
+      `CREATE INDEX IF NOT EXISTS idx_content_hashes_pubkey ON content_hashes(pubkey)`,
+
+      // Videos table for fast filter/sort on metrics
+      `CREATE TABLE IF NOT EXISTS videos (
+        event_id TEXT PRIMARY KEY,
+        author TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        loop_count INTEGER NOT NULL DEFAULT 0,
+        likes INTEGER NOT NULL DEFAULT 0,
+        comments INTEGER NOT NULL DEFAULT 0,
+        reposts INTEGER NOT NULL DEFAULT 0,
+        views INTEGER NOT NULL DEFAULT 0,
+        avg_completion INTEGER NOT NULL DEFAULT 0,
+        hashtag TEXT,
+        FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_videos_loops_created ON videos(loop_count DESC, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_videos_likes_created ON videos(likes DESC, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_videos_views_created ON videos(views DESC, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_videos_hashtag_loops ON videos(hashtag, loop_count DESC, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_videos_created_at ON videos(created_at DESC)`
     ];
 
     for (const statement of statements) {

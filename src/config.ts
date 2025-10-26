@@ -8,19 +8,19 @@ import { RelayInfo } from './types';
 
 // Pay to relay
 export const relayNpub = "npub16jdfqgazrkapk0yrqm9rdxlnys7ck39c7zmdzxtxqlmmpxg04r0sd733sv"; // Use your own npub
-export const PAY_TO_RELAY_ENABLED = true; // Set to false to disable pay to relay
+export const PAY_TO_RELAY_ENABLED = false; // Set to false to disable pay to relay
 export const RELAY_ACCESS_PRICE_SATS = 2121; // Price in SATS for relay access
 
 // Relay info
 export const relayInfo: RelayInfo = {
-  name: "Nosflare",
-  description: "A serverless Nostr relay through Cloudflare Worker and D1 database",
+  name: "Divine Video Relay",
+  description: "A specialized Nostr relay for Divine Video's 6-second short-form videos with ProofMode verification ensuring authentic, human-created content",
   pubkey: "d49a9023a21dba1b3c8306ca369bf3243d8b44b8f0b6d1196607f7b0990fa8df",
-  contact: "lux@fed.wtf",
+  contact: "relay@divine.video",
   supported_nips: [1, 2, 4, 5, 9, 11, 12, 15, 16, 17, 20, 22, 33, 40],
   software: "https://github.com/Spl0itable/nosflare",
   version: "7.4.11",
-  icon: "https://raw.githubusercontent.com/Spl0itable/nosflare/main/images/flare.png",
+  icon: "https://divine.video/logo.png",
 
   // Optional fields (uncomment as needed):
   // banner: "https://example.com/banner.jpg",

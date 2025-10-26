@@ -1,0 +1,9 @@
+# Temporary wrangler config for checking R2 contents
+name = "nosflare-check-r2"
+compatibility_date = "2025-01-04"
+main = "check-r2-contents.ts"
+
+# R2 bucket binding
+[[r2_buckets]]
+binding = "EVENT_ARCHIVE"
+bucket_name = "nostr-event-archive"

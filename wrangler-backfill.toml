@@ -1,0 +1,14 @@
+# Temporary wrangler config for videos table backfill
+name = "nosflare-backfill"
+compatibility_date = "2025-01-04"
+main = "backfill-videos.ts"
+
+# D1 Database binding
+[[d1_databases]]
+binding = "RELAY_DATABASE"
+database_name = "nostr-relay"
+database_id = "8beb11fa-ff53-462e-82a4-64a8a7db68a2"
+
+# Increase CPU limit for backfill
+[limits]
+cpu_ms = 30000

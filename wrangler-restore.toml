@@ -1,0 +1,19 @@
+# Temporary wrangler config for R2-to-D1 restoration
+name = "nosflare-restore"
+compatibility_date = "2025-01-04"
+main = "restore-from-r2.ts"
+
+# D1 Database binding
+[[d1_databases]]
+binding = "RELAY_DATABASE"
+database_name = "nostr-relay"
+database_id = "8beb11fa-ff53-462e-82a4-64a8a7db68a2"
+
+# R2 bucket binding
+[[r2_buckets]]
+binding = "EVENT_ARCHIVE"
+bucket_name = "nostr-event-archive"
+
+# Increase CPU limit for large restoration
+[limits]
+cpu_ms = 30000

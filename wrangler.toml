@@ -13,7 +13,7 @@ class_name = "RelayWebSocket"
 [[d1_databases]]
 binding = "RELAY_DATABASE"
 database_name = "nostr-relay"
-database_id = "ba4f97db-cc23-4ea0-b7da-cf8ddc3d84ef"
+database_id = "8beb11fa-ff53-462e-82a4-64a8a7db68a2"
 
 # R2 bucket binding for event archive
 [[r2_buckets]]
