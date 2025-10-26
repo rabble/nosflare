@@ -10,6 +10,10 @@ import {
   excludedRateLimitKinds
 } from './config';
 import { verifyEventSignature, hasPaidForRelay, processEvent, queryEventsWithArchive } from './relay-worker';
+import { validateSortField, validateIntColumn, getSortableFields, getIntFilterableFields } from './video-columns';
+import { shouldUseVideosTable, executeVideoQuery, fetchEventsForVideoRows } from './video-queries';
+import type { VideoFilter, IntComparison } from './video-queries';
+import { metricsCollector } from './query-metrics';
 
 // Session attachment data structure
 interface SessionAttachment {
@@ -49,6 +53,12 @@ export class RelayWebSocket implements DurableObject {
   // Payment status cache
   private paymentCache: Map<string, PaymentCacheEntry> = new Map();
   private readonly PAYMENT_CACHE_TTL = 60000;
+
+  // Vendor extension limits (Phase 1: divine_extensions)
+  private static readonly MAX_LIMIT = 200;
+  private static readonly MAX_INT_FILTERS = 3;
+  private static readonly MAX_HASHTAG_FILTERS = 5;
+  private static readonly VALID_INT_OPERATORS = ['gte', 'gt', 'lte', 'lt', 'eq', 'neq'];
 
   // Define allowed endpoints
   private static readonly ALLOWED_ENDPOINTS = [
@@ -604,6 +614,94 @@ export class RelayWebSocket implements DurableObject {
       if (!filter.limit) {
         filter.limit = 5000;
       }
+
+      // Vendor extension validation (Phase 1: divine_extensions)
+      // Only validate if filter uses vendor extensions (kind 34236 video queries)
+      if (filter.kinds?.includes(34236)) {
+        // Validate int# filters
+        let intFilterCount = 0;
+        for (const key of Object.keys(filter)) {
+          if (key.startsWith('int#')) {
+            intFilterCount++;
+            if (intFilterCount > RelayWebSocket.MAX_INT_FILTERS) {
+              this.sendClosed(session.webSocket, subscriptionId,
+                `invalid: too many int# filters (max ${RelayWebSocket.MAX_INT_FILTERS})`);
+              return;
+            }
+
+            const columnName = key.slice(4); // Remove 'int#' prefix
+            if (!validateIntColumn(columnName)) {
+              this.sendClosed(session.webSocket, subscriptionId,
+                `invalid: int# column '${columnName}' not supported. Allowed: ${getIntFilterableFields().join(', ')}`);
+              return;
+            }
+
+            const comparison = filter[key] as any;
+            if (typeof comparison !== 'object' || comparison === null) {
+              this.sendClosed(session.webSocket, subscriptionId,
+                `invalid: int#${columnName} must be an object with operators`);
+              return;
+            }
+
+            // Validate operators
+            for (const op of Object.keys(comparison)) {
+              if (!RelayWebSocket.VALID_INT_OPERATORS.includes(op)) {
+                this.sendClosed(session.webSocket, subscriptionId,
+                  `invalid: operator '${op}' not supported. Allowed: ${RelayWebSocket.VALID_INT_OPERATORS.join(', ')}`);
+                return;
+              }
+              if (typeof comparison[op] !== 'number' || !Number.isInteger(comparison[op])) {
+                this.sendClosed(session.webSocket, subscriptionId,
+                  `invalid: int#${columnName}.${op} must be an integer`);
+                return;
+              }
+            }
+          }
+        }
+
+        // Validate sort field
+        if (filter.sort) {
+          if (typeof filter.sort !== 'object' || filter.sort === null) {
+            this.sendClosed(session.webSocket, subscriptionId, 'invalid: sort must be an object');
+            return;
+          }
+          if (!filter.sort.field || typeof filter.sort.field !== 'string') {
+            this.sendClosed(session.webSocket, subscriptionId, 'invalid: sort.field required');
+            return;
+          }
+          const validatedField = validateSortField(filter.sort.field);
+          if (validatedField === 'created_at' && filter.sort.field !== 'created_at') {
+            this.sendClosed(session.webSocket, subscriptionId,
+              `invalid: sort field '${filter.sort.field}' not supported. Allowed: ${getSortableFields().join(', ')}`);
+            return;
+          }
+          if (filter.sort.dir && !['asc', 'desc'].includes(filter.sort.dir)) {
+            this.sendClosed(session.webSocket, subscriptionId, 'invalid: sort.dir must be "asc" or "desc"');
+            return;
+          }
+          // Apply hard cap for sorted queries
+          if (filter.limit && filter.limit > RelayWebSocket.MAX_LIMIT) {
+            filter.limit = RelayWebSocket.MAX_LIMIT;
+          }
+        }
+
+        // Validate cursor format (basic check - HMAC verification happens in query execution)
+        if (filter.cursor) {
+          if (typeof filter.cursor !== 'string' || filter.cursor.length === 0) {
+            this.sendClosed(session.webSocket, subscriptionId, 'invalid: cursor must be non-empty string');
+            return;
+          }
+        }
+
+        // Validate hashtag filter limits
+        if (filter['#t'] && Array.isArray(filter['#t'])) {
+          if (filter['#t'].length > RelayWebSocket.MAX_HASHTAG_FILTERS) {
+            this.sendClosed(session.webSocket, subscriptionId,
+              `invalid: too many hashtags (max ${RelayWebSocket.MAX_HASHTAG_FILTERS})`);
+            return;
+          }
+        }
+      }
     }
 
     // Store subscription
@@ -615,21 +713,95 @@ export class RelayWebSocket implements DurableObject {
     console.log(`New subscription ${subscriptionId} for session ${session.id} on DO ${this.doName}`);
 
     try {
-      // Query events with caching
-      const result = await this.getCachedOrQuery(filters, session.bookmark);
+      // Check if any filter uses vendor extensions (videos table)
+      const hasVideoFilter = filters.some(f => shouldUseVideosTable(f));
 
-      // Update session bookmark
-      if (result.bookmark) {
-        session.bookmark = result.bookmark;
+      if (hasVideoFilter) {
+        // Use video query system for kind 34236 with vendor extensions
+        // Note: Phase 1 supports single filter only
+        if (filters.length > 1) {
+          this.sendClosed(session.webSocket, subscriptionId,
+            'invalid: vendor extensions do not support multiple filters yet');
+          return;
+        }
+
+        const filter = filters[0] as VideoFilter;
+        const startTime = Date.now();
+
+        try {
+          // Get cursor secret from environment
+          const cursorSecret = this.env.CURSOR_SECRET;
+          const previousCursorSecret = this.env.CURSOR_SECRET_PREVIOUS;
+
+          if (!cursorSecret) {
+            throw new Error('CURSOR_SECRET not configured');
+          }
+
+          // Execute video query
+          const { rows, nextCursor, hasMore } = await executeVideoQuery(
+            filter,
+            this.env.RELAY_DATABASE,
+            cursorSecret,
+            previousCursorSecret
+          );
+
+          // Fetch full Nostr events for the video rows
+          const events = await fetchEventsForVideoRows(rows, this.env.RELAY_DATABASE);
+
+          // Send events to client
+          for (const event of events) {
+            this.sendEvent(session.webSocket, subscriptionId, event);
+          }
+
+          // Record metrics
+          const latencyMs = Date.now() - startTime;
+          metricsCollector.recordQuery({
+            queryType: 'vendor',
+            sortField: filter.sort?.field || 'created_at',
+            hasHashtag: !!filter['#t'],
+            hasIntFilters: Object.keys(filter).some(k => k.startsWith('int#')),
+            hasCursor: !!filter.cursor,
+            latencyMs,
+            rowsReturned: events.length,
+            cursorRejected: false,
+            timestamp: Math.floor(Date.now() / 1000)
+          });
+
+          // Send EOSE
+          this.sendEOSE(session.webSocket, subscriptionId);
+
+          // Send NOTICE with cursor if hasMore
+          if (hasMore && nextCursor) {
+            this.sendVCursor(session.webSocket, subscriptionId, nextCursor);
+          }
+
+        } catch (error: any) {
+          // Handle cursor rejection errors
+          if (error.message?.includes('invalid: cursor')) {
+            metricsCollector.recordCursorRejection(error.message, filter);
+            this.sendClosed(session.webSocket, subscriptionId, error.message);
+            return;
+          }
+          throw error; // Re-throw other errors
+        }
+
+      } else {
+        // Standard Nostr query (no vendor extensions)
+        const result = await this.getCachedOrQuery(filters, session.bookmark);
+
+        // Update session bookmark
+        if (result.bookmark) {
+          session.bookmark = result.bookmark;
+        }
+
+        // Send events to client
+        for (const event of result.events) {
+          this.sendEvent(session.webSocket, subscriptionId, event);
+        }
+
+        // Send EOSE
+        this.sendEOSE(session.webSocket, subscriptionId);
       }
-
-      // Send events to client
-      for (const event of result.events) {
-        this.sendEvent(session.webSocket, subscriptionId, event);
-      }
-
-      // Send EOSE
-      this.sendEOSE(session.webSocket, subscriptionId);
 
     } catch (error: any) {
       console.error(`Error processing REQ for subscription ${subscriptionId}:`, error);
@@ -850,6 +1022,17 @@ export class RelayWebSocket implements DurableObject {
       ws.send(JSON.stringify(eventMessage));
     } catch (error) {
       console.error('Error sending EVENT:', error);
+    }
+  }
+
+  private sendVCursor(ws: WebSocket, subscriptionId: string, cursor: string): void {
+    try {
+      // Send NOTICE message with cursor for pagination
+      // Format: ["NOTICE", "VCURSOR", {"sub": "xyz", "cursor": "base64url..."}]
+      const noticeMessage = ['NOTICE', 'VCURSOR', { sub: subscriptionId, cursor }];
+      ws.send(JSON.stringify(noticeMessage));
+    } catch (error) {
+      console.error('Error sending VCURSOR:', error);
     }
   }
 }

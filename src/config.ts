@@ -67,6 +67,16 @@ export const relayInfo: RelayInfo = {
   //   subscription: [{ amount: 5000000, unit: "msats", period: 2592000 }],
   //   publication: [{ kinds: [4], amount: 100, unit: "msats" }],
   // }
+
+  // Vendor extensions (Phase 1: Video discovery with custom filters)
+  divine_extensions: {
+    int_filters: ["loop_count", "likes", "views", "comments", "avg_completion"],
+    sort_fields: ["loop_count", "likes", "views", "comments", "avg_completion", "created_at"],
+    cursor_format: "base64url-encoded HMAC-SHA256 with query hash binding",
+    videos_kind: 34236,
+    metrics_freshness_sec: 3600, // Metrics updated hourly via analytics pipeline
+    limit_max: 200 // Hard cap for sorted queries
+  }
 };
 
 // Nostr address NIP-05 verified users (for verified checkmark like username@your-relay.com)
