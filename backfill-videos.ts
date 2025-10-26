@@ -67,10 +67,14 @@ export default {
       for (const row of events.results || []) {
         stats.total++;
 
+        let eventId: string | undefined;
+        let author: string | undefined;
+        let createdAt: number | undefined;
+
         try {
-          const eventId = row.id as string;
-          const author = row.pubkey as string;
-          const createdAt = row.created_at as number;
+          eventId = row.id as string;
+          author = row.pubkey as string;
+          createdAt = row.created_at as number;
           const tagsJson = row.tags as string;
 
           // Parse tags
