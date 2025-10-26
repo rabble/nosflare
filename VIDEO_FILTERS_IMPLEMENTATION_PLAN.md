@@ -178,37 +178,69 @@ function buildVideoQuery(filter: VideoFilter): {sql: string, args: any[]} {
 - Keyset pagination uses WHERE clauses on indexed columns
 - Consistent results even when data changes
 
+**CRITICAL: Cursor integrity with HMAC**
+Cursors must be authenticated to prevent pathological scans from tampered cursors.
+
 **Cursor structure**:
 ```typescript
 interface VideoCursor {
   sortFieldValue: number | string;  // value of the sort field (e.g., loop_count=485)
   createdAt: number;                 // tie-breaker 1
   eventId: string;                   // tie-breaker 2 (unique)
+  sortField: string;                 // which field we're sorting by
   sortDir: 'asc' | 'desc';
 }
 
-function encodeCursor(cursor: VideoCursor): string {
-  return Buffer.from(JSON.stringify(cursor)).toString('base64url');
+interface SignedCursor {
+  payload: VideoCursor;
+  hmac: string;  // HMAC-SHA256 of payload
 }
 
-function decodeCursor(encoded: string): VideoCursor {
-  return JSON.parse(Buffer.from(encoded, 'base64url').toString());
+function encodeCursor(cursor: VideoCursor, secret: string): string {
+  const payload = cursor;
+  const hmac = createHmac('sha256', secret)
+    .update(JSON.stringify(payload))
+    .digest('hex');
+
+  const signed: SignedCursor = { payload, hmac };
+  return Buffer.from(JSON.stringify(signed)).toString('base64url');
+}
+
+function decodeCursor(encoded: string, secret: string): VideoCursor {
+  const signed: SignedCursor = JSON.parse(Buffer.from(encoded, 'base64url').toString());
+
+  // Verify HMAC
+  const expectedHmac = createHmac('sha256', secret)
+    .update(JSON.stringify(signed.payload))
+    .digest('hex');
+
+  if (signed.hmac !== expectedHmac) {
+    throw new Error('invalid: cursor tampering detected');
+  }
+
+  return signed.payload;
 }
 
 function buildCursorClause(
   encodedCursor: string | undefined,
   sortField: string,
   sortDir: 'ASC' | 'DESC',
-  args: any[]
+  args: any[],
+  secret: string
 ): string {
   if (!encodedCursor) return '';
 
-  const cursor = decodeCursor(encodedCursor);
+  const cursor = decodeCursor(encodedCursor, secret);
 
-  // For DESC: (field < cursor.value) OR (field = cursor.value AND created_at < cursor.created_at) OR ...
-  // For ASC:  (field > cursor.value) OR (field = cursor.value AND created_at > cursor.created_at) OR ...
+  // CRITICAL: Keyset clause must mirror ORDER BY exactly
+  // ORDER BY: sortField DESC/ASC, created_at DESC/ASC, event_id ASC
 
-  const op = sortDir === 'DESC' ? '<' : '>';
+  // For DESC,DESC,ASC: (field < ?) OR (field = ? AND created_at < ?) OR (field = ? AND created_at = ? AND event_id > ?)
+  // For ASC,ASC,ASC:   (field > ?) OR (field = ? AND created_at > ?) OR (field = ? AND created_at = ? AND event_id > ?)
+
+  const fieldOp = sortDir === 'DESC' ? '<' : '>';
+  const timeOp = sortDir === 'DESC' ? '<' : '>';  // Same direction as field for created_at
+  const idOp = '>';  // Always ASC for event_id tie-breaker
 
   args.push(
     cursor.sortFieldValue,
@@ -217,9 +249,9 @@ function buildCursorClause(
   );
 
   return ` AND (
-    (${sortField} ${op} ?)
-    OR (${sortField} = ? AND created_at ${op} ?)
-    OR (${sortField} = ? AND created_at = ? AND event_id > ?)
+    (${sortField} ${fieldOp} ?)
+    OR (${sortField} = ? AND created_at ${timeOp} ?)
+    OR (${sortField} = ? AND created_at = ? AND event_id ${idOp} ?)
   )`;
 }
 ```
@@ -230,11 +262,35 @@ function buildCursorClause(
 
 **handleReq() validation** (lines 533-607):
 ```typescript
-// After existing validation, add:
+// CRITICAL: Whitelist and validate everything
+const MAX_INT_FILTERS = 3;  // Prevent Cartesian pain
+const MAX_LIMIT = 500;       // Hard cap
+const ALLOWED_SORT_FIELDS = ['loop_count', 'likes', 'views', 'comments', 'reposts', 'avg_completion', 'created_at'];
+const ALLOWED_INT_COLUMNS = ['loop_count', 'likes', 'views', 'comments', 'reposts', 'avg_completion'];
+
 for (const filter of filters) {
+  let intFilterCount = 0;
+
   // Validate int# filters
   for (const [key, value] of Object.entries(filter)) {
     if (key.startsWith('int#')) {
+      intFilterCount++;
+
+      // Enforce max int# predicates
+      if (intFilterCount > MAX_INT_FILTERS) {
+        this.sendClosed(session.webSocket, subscriptionId,
+          `invalid: too many int# filters (max ${MAX_INT_FILTERS})`);
+        return;
+      }
+
+      // Reject unknown columns
+      const column = key.slice(4);
+      if (!ALLOWED_INT_COLUMNS.includes(column)) {
+        this.sendClosed(session.webSocket, subscriptionId,
+          `invalid: unsupported int# column: ${column}`);
+        return;
+      }
+
       if (typeof value !== 'object') {
         this.sendClosed(session.webSocket, subscriptionId,
           `invalid: int# filter must be an object with comparison operators`);
@@ -248,16 +304,16 @@ for (const filter of filters) {
             `invalid: unknown int# operator: ${op}`);
           return;
         }
-        if (typeof value[op] !== 'number') {
+        if (typeof value[op] !== 'number' || !isFinite(value[op])) {
           this.sendClosed(session.webSocket, subscriptionId,
-            `invalid: int# operator ${op} must have numeric value`);
+            `invalid: int# operator ${op} must have finite numeric value`);
           return;
         }
       }
     }
   }
 
-  // Validate sort
+  // Validate sort (whitelist fields)
   if (filter.sort) {
     if (typeof filter.sort !== 'object' || !filter.sort.field) {
       this.sendClosed(session.webSocket, subscriptionId,
@@ -265,8 +321,7 @@ for (const filter of filters) {
       return;
     }
 
-    const validFields = ['loop_count', 'likes', 'views', 'comments', 'reposts', 'avg_completion', 'created_at'];
-    if (!validFields.includes(filter.sort.field)) {
+    if (!ALLOWED_SORT_FIELDS.includes(filter.sort.field)) {
       this.sendClosed(session.webSocket, subscriptionId,
         `invalid: unsupported sort field: ${filter.sort.field}`);
       return;
@@ -280,9 +335,20 @@ for (const filter of filters) {
   }
 
   // Validate cursor
-  if (filter.cursor && typeof filter.cursor !== 'string') {
+  if (filter.cursor) {
+    if (typeof filter.cursor !== 'string') {
+      this.sendClosed(session.webSocket, subscriptionId,
+        `invalid: cursor must be string`);
+      return;
+    }
+
+    // Cursor will be verified via HMAC in decodeCursor()
+  }
+
+  // Hard cap on limit
+  if (filter.limit && filter.limit > MAX_LIMIT) {
     this.sendClosed(session.webSocket, subscriptionId,
-      `invalid: cursor must be string`);
+      `invalid: limit too high (max ${MAX_LIMIT})`);
     return;
   }
 }
@@ -318,19 +384,23 @@ export async function queryEvents(
 ["EVENT", "sub-id", {...event}]
 ```
 
-**Cursor in NOTICE** (vendor extension):
+**CRITICAL: Don't extend EOSE** - NIP-01 EOSE is a 2-item array, adding 3rd param breaks clients.
+
+**Cursor via NOTICE** (recommended):
 ```json
-["NOTICE", "sub-id:cursor:<base64-cursor>"]
+["NOTICE", "sub-id:cursor:<base64url+hmac>"]
 ```
 
-**Or** use EOSE with cursor metadata:
+**Or vendor message** (cleaner separation):
 ```json
-["EOSE", "sub-id", {"cursor": "<base64-cursor>", "hasMore": true}]
+["VCURSOR", "sub-id", "<base64url+hmac>"]
 ```
 
-**Recommendation**: Extended EOSE format - cleaner, already end-of-subscription signal
+**Recommendation**: NOTICE format - works everywhere, doesn't require client changes
 
 ### 8. NIP-11 Relay Info Update
+
+**CRITICAL: Vendor-scoped extensions** (no standard for extensions, use vendor prefix)
 
 **File**: `src/config.ts` or `src/relay-worker.ts`
 
@@ -338,14 +408,17 @@ export async function queryEvents(
 export const relayInfo: RelayInfo = {
   // ... existing fields ...
 
-  // NEW: vendor extensions
-  extensions: {
-    intTagFilters: true,
-    sort: ["loop_count", "likes", "views", "comments", "reposts", "avg_completion", "created_at"],
-    cursor: "base64url",
-    videoMetrics: {
+  // Vendor-scoped extensions (divine_extensions not extensions)
+  divine_extensions: {
+    int_filters: true,
+    sort_fields: ["loop_count", "likes", "views", "comments", "reposts", "avg_completion", "created_at"],
+    cursor_format: "base64url+hmac",
+    videos_kind: 34236,  // Kind consistency: use 34236 throughout
+    metrics_ttl: 900,    // Metrics refreshed every 15 minutes
+    video_metrics: {
       description: "Filter and sort kind 34236 video events by engagement metrics",
-      supported_metrics: ["loop_count", "likes", "views", "comments", "reposts", "avg_completion"]
+      supported_metrics: ["loop_count", "likes", "views", "comments", "reposts", "avg_completion"],
+      eventual_consistency: true
     }
   }
 };
@@ -370,6 +443,7 @@ export const relayInfo: RelayInfo = {
     ["window", "hourly"],
     ["t", "music"],
     ["ttl", "3600"],
+    ["v", "1"],   // Version tag for schema evolution
     ["e", "<top-video-1-id>"],
     ["e", "<top-video-2-id>"],
     ["e", "<top-video-3-id>"],
@@ -379,6 +453,12 @@ export const relayInfo: RelayInfo = {
   "sig": "..."
 }
 ```
+
+**CRITICAL additions:**
+- `["v", "1"]` - Version tag so you can evolve tag set later
+- `["ttl", "..."]` - Receivers can drop stale lists automatically
+- Keep ≤ 500 e tags per list
+- Use dedicated publisher key (not relay infra keys)
 
 **d-tag structure**: `{relay-domain}:rank:{metric}:{window}:{scope}`
 - `relay-domain`: e.g., `divine.video`
@@ -610,8 +690,8 @@ crons = ["*/15 * * * *"]  # Every 15 minutes
 - **Fallback**: If videos table query fails, fall back to events table
 
 ### Multi-Hashtag Strategy
-**Current**: `videos.hashtag` stores first hashtag only
-**Future**:
+**Current**: `videos.hashtag` stores first hashtag only (explicit limitation)
+**Phase 4**:
 ```sql
 CREATE TABLE video_hashtags (
   event_id TEXT NOT NULL,
@@ -619,10 +699,23 @@ CREATE TABLE video_hashtags (
   PRIMARY KEY (event_id, hashtag),
   FOREIGN KEY (event_id) REFERENCES videos(event_id) ON DELETE CASCADE
 );
-CREATE INDEX idx_video_hashtags_hashtag ON video_hashtags(hashtag);
+
+-- Index for hashtag lookups
+CREATE INDEX idx_vh_hashtag_event ON video_hashtags(hashtag, event_id);
 ```
 
-Query becomes LEFT JOIN when #t filter present.
+**Query shape with hashtag filter**:
+```sql
+SELECT v.*
+FROM videos v
+JOIN video_hashtags h ON h.event_id = v.event_id
+WHERE h.hashtag IN (?, ...)
+  AND v.created_at >= ?
+ORDER BY v.loop_count DESC, v.created_at DESC, v.event_id ASC
+LIMIT ?;
+```
+
+**Document in README**: "Phase 1-3 match primary hashtag only. Multi-hashtag filtering coming in Phase 4."
 
 ---
 
