@@ -1,8 +1,6 @@
 // ABOUTME: Cursor authentication with HMAC and query hash binding
 // ABOUTME: Prevents cursor tampering and cross-query reuse attacks
 
-import { createHmac } from 'crypto';
-
 /**
  * Video cursor payload
  * Contains pagination state and query binding
@@ -50,6 +48,50 @@ function canonicalize(obj: any): string {
 }
 
 /**
+ * Compute HMAC-SHA256 using Web Crypto API (async)
+ * @param secret - HMAC secret key
+ * @param data - Data to sign
+ * @returns Hex-encoded HMAC
+ */
+async function computeHmac(secret: string, data: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const keyData = encoder.encode(secret);
+  const messageData = encoder.encode(data);
+
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw',
+    keyData,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+
+  const signature = await crypto.subtle.sign('HMAC', cryptoKey, messageData);
+  const hashArray = Array.from(new Uint8Array(signature));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Base64url encode (without padding)
+ */
+function base64urlEncode(str: string): string {
+  const b64 = btoa(str);
+  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+/**
+ * Base64url decode
+ */
+function base64urlDecode(str: string): string {
+  // Add padding back
+  str = str.replace(/-/g, '+').replace(/_/g, '/');
+  while (str.length % 4) {
+    str += '=';
+  }
+  return atob(str);
+}
+
+/**
  * Generate a stable hash of a filter+sort combination
  * Used to bind cursors to specific queries
  *
@@ -58,11 +100,10 @@ function canonicalize(obj: any): string {
  * @param secret - HMAC secret
  * @returns Base64url-encoded hash
  */
-export function makeQueryHash(filter: any, sort: any, secret: string): string {
+export async function makeQueryHash(filter: any, sort: any, secret: string): Promise<string> {
   const payload = canonicalize({ filter, sort });
-  return createHmac('sha256', secret)
-    .update(payload)
-    .digest('base64url');
+  const hmac = await computeHmac(secret, payload);
+  return base64urlEncode(hmac);
 }
 
 /**
@@ -72,18 +113,16 @@ export function makeQueryHash(filter: any, sort: any, secret: string): string {
  * @param secret - HMAC secret
  * @returns Base64url-encoded signed cursor
  */
-export function encodeCursor(cursor: VideoCursor, secret: string): string {
+export async function encodeCursor(cursor: VideoCursor, secret: string): Promise<string> {
   const payload = cursor;
 
   // Sign the payload
-  const hmac = createHmac('sha256', secret)
-    .update(JSON.stringify(payload))
-    .digest('hex');
+  const hmac = await computeHmac(secret, JSON.stringify(payload));
 
   const signed: SignedCursor = { payload, hmac };
 
   // Encode to base64url
-  return Buffer.from(JSON.stringify(signed)).toString('base64url');
+  return base64urlEncode(JSON.stringify(signed));
 }
 
 /**
@@ -98,20 +137,20 @@ export function encodeCursor(cursor: VideoCursor, secret: string): string {
  * @returns Verified cursor payload
  * @throws Error if HMAC invalid or query hash mismatch
  */
-export function decodeCursor(
+export async function decodeCursor(
   encoded: string,
   currentFilter: any,
   currentSort: any,
   secret: string,
   previousSecret?: string
-): VideoCursor {
+): Promise<VideoCursor> {
   try {
-    return decodeCursorWithSecret(encoded, currentFilter, currentSort, secret);
+    return await decodeCursorWithSecret(encoded, currentFilter, currentSort, secret);
   } catch (err) {
     // Try previous secret if rotation in progress
     if (previousSecret) {
       try {
-        return decodeCursorWithSecret(encoded, currentFilter, currentSort, previousSecret);
+        return await decodeCursorWithSecret(encoded, currentFilter, currentSort, previousSecret);
       } catch {}
     }
     throw err;  // Neither secret worked
@@ -122,28 +161,24 @@ export function decodeCursor(
  * Decode cursor with a specific secret
  * Internal helper for decodeCursor
  */
-function decodeCursorWithSecret(
+async function decodeCursorWithSecret(
   encoded: string,
   currentFilter: any,
   currentSort: any,
   secret: string
-): VideoCursor {
+): Promise<VideoCursor> {
   // Decode from base64url
-  const signed: SignedCursor = JSON.parse(
-    Buffer.from(encoded, 'base64url').toString()
-  );
+  const signed: SignedCursor = JSON.parse(base64urlDecode(encoded));
 
   // Verify HMAC
-  const expectedHmac = createHmac('sha256', secret)
-    .update(JSON.stringify(signed.payload))
-    .digest('hex');
+  const expectedHmac = await computeHmac(secret, JSON.stringify(signed.payload));
 
   if (signed.hmac !== expectedHmac) {
     throw new Error('invalid: cursor tampering detected');
   }
 
   // Verify query hash (prevents cursor reuse across different queries)
-  const expectedQueryHash = makeQueryHash(currentFilter, currentSort, secret);
+  const expectedQueryHash = await makeQueryHash(currentFilter, currentSort, secret);
   if (signed.payload.queryHash !== expectedQueryHash) {
     throw new Error('invalid: cursor query mismatch');
   }
@@ -163,7 +198,7 @@ function decodeCursorWithSecret(
  * @param secret - HMAC secret
  * @returns Encoded cursor string
  */
-export function createCursorFromRow(
+export async function createCursorFromRow(
   lastRow: {
     event_id: string;
     created_at: number;
@@ -174,8 +209,8 @@ export function createCursorFromRow(
   filter: any,
   sort: any,
   secret: string
-): string {
-  const queryHash = makeQueryHash(filter, sort, secret);
+): Promise<string> {
+  const queryHash = await makeQueryHash(filter, sort, secret);
 
   const cursor: VideoCursor = {
     sortField,
@@ -186,5 +221,5 @@ export function createCursorFromRow(
     queryHash
   };
 
-  return encodeCursor(cursor, secret);
+  return await encodeCursor(cursor, secret);
 }

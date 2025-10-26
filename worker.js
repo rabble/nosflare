@@ -92,7 +92,7 @@ var relayInfo = {
     // created_at_lower_limit: 0,
     // created_at_upper_limit: 2147483647,
     // default_limit: 10000
-  }
+  },
   // Event retention policies (uncomment and configure as needed):
   // retention: [
   //   { kinds: [0, 1, [5, 7], [40, 49]], time: 3600 },
@@ -113,6 +113,17 @@ var relayInfo = {
   //   subscription: [{ amount: 5000000, unit: "msats", period: 2592000 }],
   //   publication: [{ kinds: [4], amount: 100, unit: "msats" }],
   // }
+  // Vendor extensions (Phase 1: Video discovery with custom filters)
+  divine_extensions: {
+    int_filters: ["loop_count", "likes", "views", "comments", "avg_completion"],
+    sort_fields: ["loop_count", "likes", "views", "comments", "avg_completion", "created_at"],
+    cursor_format: "base64url-encoded HMAC-SHA256 with query hash binding",
+    videos_kind: 34236,
+    metrics_freshness_sec: 3600,
+    // Metrics updated hourly via analytics pipeline
+    limit_max: 200
+    // Hard cap for sorted queries
+  }
 };
 var nip05Users = {
   "Luxas": "d49a9023a21dba1b3c8306ca369bf3243d8b44b8f0b6d1196607f7b0990fa8df"
@@ -2884,6 +2895,127 @@ var schnorr = /* @__PURE__ */ (() => {
   };
 })();
 
+// src/migrations.ts
+var MIGRATIONS = [
+  {
+    version: 1,
+    description: "Initial schema - events, tags, event_tags_cache, paid_pubkeys, content_hashes",
+    up: async (db) => {
+      console.log("Migration 1: Already applied (existing schema)");
+    }
+  },
+  {
+    version: 2,
+    description: "Add videos table with composite indexes for video discovery",
+    up: async (db) => {
+      await db.prepare(`
+        CREATE TABLE IF NOT EXISTS videos (
+          event_id TEXT PRIMARY KEY,
+          author TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          loop_count INTEGER NOT NULL DEFAULT 0,
+          likes INTEGER NOT NULL DEFAULT 0,
+          comments INTEGER NOT NULL DEFAULT 0,
+          reposts INTEGER NOT NULL DEFAULT 0,
+          views INTEGER NOT NULL DEFAULT 0,
+          avg_completion INTEGER NOT NULL DEFAULT 0,
+          hashtag TEXT,
+          FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+        )
+      `).run();
+      console.log("Created videos table");
+      const globalIndexes = [
+        "CREATE INDEX IF NOT EXISTS idx_videos_loops_created_id ON videos(loop_count DESC, created_at DESC, event_id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_videos_likes_created_id ON videos(likes DESC, created_at DESC, event_id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_videos_views_created_id ON videos(views DESC, created_at DESC, event_id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_videos_comments_created_id ON videos(comments DESC, created_at DESC, event_id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_videos_reposts_created_id ON videos(reposts DESC, created_at DESC, event_id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_videos_avg_completion_created_id ON videos(avg_completion DESC, created_at DESC, event_id ASC)"
+      ];
+      for (const sql of globalIndexes) {
+        await db.prepare(sql).run();
+      }
+      console.log(`Created ${globalIndexes.length} global sort indexes`);
+      const hashtagIndexes = [
+        "CREATE INDEX IF NOT EXISTS idx_videos_hashtag_loops_created_id ON videos(hashtag, loop_count DESC, created_at DESC, event_id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_videos_hashtag_likes_created_id ON videos(hashtag, likes DESC, created_at DESC, event_id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_videos_hashtag_views_created_id ON videos(hashtag, views DESC, created_at DESC, event_id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_videos_hashtag_comments_created_id ON videos(hashtag, comments DESC, created_at DESC, event_id ASC)"
+      ];
+      for (const sql of hashtagIndexes) {
+        await db.prepare(sql).run();
+      }
+      console.log(`Created ${hashtagIndexes.length} hashtag-filtered sort indexes`);
+      const timeWindowIndexes = [
+        "CREATE INDEX IF NOT EXISTS idx_videos_time_loops_id ON videos(created_at DESC, loop_count DESC, event_id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_videos_time_likes_id ON videos(created_at DESC, likes DESC, event_id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_videos_time_views_id ON videos(created_at DESC, views DESC, event_id ASC)"
+      ];
+      for (const sql of timeWindowIndexes) {
+        await db.prepare(sql).run();
+      }
+      console.log(`Created ${timeWindowIndexes.length} time-window sort indexes`);
+      console.log("Migration 2: Videos table and indexes created successfully");
+    }
+  }
+  // Add future migrations here with incrementing version numbers
+  // Example:
+  // {
+  //   version: 3,
+  //   description: 'Add video_hashtags junction table for multi-hashtag support',
+  //   up: async (db: D1Database) => {
+  //     await db.prepare(`
+  //       CREATE TABLE IF NOT EXISTS video_hashtags (
+  //         event_id TEXT NOT NULL,
+  //         hashtag TEXT NOT NULL,
+  //         PRIMARY KEY (event_id, hashtag),
+  //         FOREIGN KEY (event_id) REFERENCES videos(event_id) ON DELETE CASCADE
+  //       )
+  //     `).run();
+  //
+  //     await db.prepare(`
+  //       CREATE INDEX IF NOT EXISTS idx_vh_hashtag_event ON video_hashtags(hashtag, event_id)
+  //     `).run();
+  //   }
+  // }
+];
+async function runMigrations(db) {
+  console.log("Starting migration check...");
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version INTEGER PRIMARY KEY,
+      applied_at INTEGER NOT NULL,
+      description TEXT NOT NULL
+    )
+  `).run();
+  for (const migration of MIGRATIONS) {
+    const existing = await db.prepare(
+      "SELECT version FROM schema_migrations WHERE version = ?"
+    ).bind(migration.version).first();
+    if (!existing) {
+      console.log(`Running migration ${migration.version}: ${migration.description}`);
+      try {
+        await migration.up(db);
+        await db.prepare(
+          "INSERT INTO schema_migrations (version, applied_at, description) VALUES (?, ?, ?)"
+        ).bind(
+          migration.version,
+          Math.floor(Date.now() / 1e3),
+          migration.description
+        ).run();
+        console.log(`\u2713 Migration ${migration.version} completed`);
+      } catch (error) {
+        console.error(`\u2717 Migration ${migration.version} failed:`, error);
+        throw error;
+      }
+    } else {
+      console.log(`Migration ${migration.version} already applied, skipping`);
+    }
+  }
+  console.log("All migrations completed");
+}
+__name(runMigrations, "runMigrations");
+
 // src/relay-worker.ts
 var {
   relayInfo: relayInfo2,
@@ -2898,7 +3030,7 @@ var {
   blockedNip05Domains: blockedNip05Domains2,
   allowedNip05Domains: allowedNip05Domains2
 } = config_exports;
-var ARCHIVE_RETENTION_DAYS = 90;
+var ARCHIVE_RETENTION_DAYS = 7300;
 var ARCHIVE_BATCH_SIZE = 10;
 var GLOBAL_MAX_EVENTS = 5e3;
 var MAX_QUERY_COMPLEXITY = 1e3;
@@ -2984,6 +3116,7 @@ async function initializeDatabase(db) {
         FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
       )`,
       `CREATE INDEX IF NOT EXISTS idx_content_hashes_pubkey ON content_hashes(pubkey)`
+      // Note: videos table and composite indexes now created by Migration 2 (src/migrations.ts)
     ];
     for (const statement of statements) {
       await session.prepare(statement).run();
@@ -3015,6 +3148,11 @@ async function initializeDatabase(db) {
     await session.prepare("ANALYZE events").run();
     await session.prepare("ANALYZE tags").run();
     await session.prepare("ANALYZE event_tags_cache").run();
+    await runMigrations(db);
+    try {
+      await session.prepare("ANALYZE videos").run();
+    } catch (e) {
+    }
     console.log("Database initialization completed!");
   } catch (error) {
     console.error("Failed to initialize database:", error);
@@ -3306,15 +3444,20 @@ async function saveEventToD1(event, env) {
     const tagInserts = [];
     let tagP = null, tagE = null, tagA = null;
     for (const tag of event.tags) {
-      if (tag[0] && tag[1]) {
-        tagInserts.push({ tag_name: tag[0], tag_value: tag[1] });
-        if (tag[0] === "p" && !tagP)
-          tagP = tag[1];
-        if (tag[0] === "e" && !tagE)
-          tagE = tag[1];
-        if (tag[0] === "a" && !tagA)
-          tagA = tag[1];
+      const tagName = tag[0];
+      if (!tagName)
+        continue;
+      for (let i = 1; i < tag.length; i++) {
+        if (tag[i]) {
+          tagInserts.push({ tag_name: tagName, tag_value: tag[i] });
+        }
       }
+      if (tagName === "p" && !tagP && tag[1])
+        tagP = tag[1];
+      if (tagName === "e" && !tagE && tag[1])
+        tagE = tag[1];
+      if (tagName === "a" && !tagA && tag[1])
+        tagA = tag[1];
     }
     for (let i = 0; i < tagInserts.length; i += 50) {
       const chunk = tagInserts.slice(i, i + 50);
@@ -5245,6 +5388,433 @@ var relay_worker_default = {
   }
 };
 
+// src/video-columns.ts
+var SORTABLE_COLUMNS = {
+  loop_count: "loop_count",
+  likes: "likes",
+  views: "views",
+  comments: "comments",
+  avg_completion: "avg_completion",
+  created_at: "created_at"
+  // reposts: 'reposts'  // COMMENTED OUT until populated by analytics
+};
+var INT_FILTERABLE_COLUMNS = {
+  loop_count: "loop_count",
+  likes: "likes",
+  views: "views",
+  comments: "comments",
+  avg_completion: "avg_completion"
+  // reposts: 'reposts'  // COMMENTED OUT until populated by analytics
+};
+function validateSortField(field) {
+  if (!field)
+    return "created_at";
+  return SORTABLE_COLUMNS[field] ?? "created_at";
+}
+__name(validateSortField, "validateSortField");
+function validateIntColumn(column) {
+  return column in INT_FILTERABLE_COLUMNS;
+}
+__name(validateIntColumn, "validateIntColumn");
+function getSortableFields() {
+  return Object.keys(SORTABLE_COLUMNS);
+}
+__name(getSortableFields, "getSortableFields");
+function getIntFilterableFields() {
+  return Object.keys(INT_FILTERABLE_COLUMNS);
+}
+__name(getIntFilterableFields, "getIntFilterableFields");
+
+// src/cursor-auth.ts
+function canonicalize(obj) {
+  if (obj === null || obj === void 0) {
+    return JSON.stringify(obj);
+  }
+  if (typeof obj !== "object") {
+    return JSON.stringify(obj);
+  }
+  if (Array.isArray(obj)) {
+    return "[" + obj.map(canonicalize).join(",") + "]";
+  }
+  const keys = Object.keys(obj).sort();
+  const pairs = keys.map((k) => `"${k}":${canonicalize(obj[k])}`);
+  return "{" + pairs.join(",") + "}";
+}
+__name(canonicalize, "canonicalize");
+async function computeHmac(secret, data) {
+  const encoder = new TextEncoder();
+  const keyData = encoder.encode(secret);
+  const messageData = encoder.encode(data);
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    keyData,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", cryptoKey, messageData);
+  const hashArray = Array.from(new Uint8Array(signature));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+__name(computeHmac, "computeHmac");
+function base64urlEncode(str) {
+  const b64 = btoa(str);
+  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+}
+__name(base64urlEncode, "base64urlEncode");
+function base64urlDecode(str) {
+  str = str.replace(/-/g, "+").replace(/_/g, "/");
+  while (str.length % 4) {
+    str += "=";
+  }
+  return atob(str);
+}
+__name(base64urlDecode, "base64urlDecode");
+async function makeQueryHash(filter, sort, secret) {
+  const payload = canonicalize({ filter, sort });
+  const hmac2 = await computeHmac(secret, payload);
+  return base64urlEncode(hmac2);
+}
+__name(makeQueryHash, "makeQueryHash");
+async function encodeCursor(cursor, secret) {
+  const payload = cursor;
+  const hmac2 = await computeHmac(secret, JSON.stringify(payload));
+  const signed = { payload, hmac: hmac2 };
+  return base64urlEncode(JSON.stringify(signed));
+}
+__name(encodeCursor, "encodeCursor");
+async function decodeCursor(encoded, currentFilter, currentSort, secret, previousSecret) {
+  try {
+    return await decodeCursorWithSecret(encoded, currentFilter, currentSort, secret);
+  } catch (err) {
+    if (previousSecret) {
+      try {
+        return await decodeCursorWithSecret(encoded, currentFilter, currentSort, previousSecret);
+      } catch {
+      }
+    }
+    throw err;
+  }
+}
+__name(decodeCursor, "decodeCursor");
+async function decodeCursorWithSecret(encoded, currentFilter, currentSort, secret) {
+  const signed = JSON.parse(base64urlDecode(encoded));
+  const expectedHmac = await computeHmac(secret, JSON.stringify(signed.payload));
+  if (signed.hmac !== expectedHmac) {
+    throw new Error("invalid: cursor tampering detected");
+  }
+  const expectedQueryHash = await makeQueryHash(currentFilter, currentSort, secret);
+  if (signed.payload.queryHash !== expectedQueryHash) {
+    throw new Error("invalid: cursor query mismatch");
+  }
+  return signed.payload;
+}
+__name(decodeCursorWithSecret, "decodeCursorWithSecret");
+async function createCursorFromRow(lastRow, sortField, sortDir, filter, sort, secret) {
+  const queryHash = await makeQueryHash(filter, sort, secret);
+  const cursor = {
+    sortField,
+    sortDir,
+    sortFieldValue: lastRow[sortField],
+    createdAt: lastRow.created_at,
+    eventId: lastRow.event_id,
+    queryHash
+  };
+  return await encodeCursor(cursor, secret);
+}
+__name(createCursorFromRow, "createCursorFromRow");
+
+// src/video-queries.ts
+function shouldUseVideosTable(filter) {
+  if (!filter.kinds?.includes(34236)) {
+    return false;
+  }
+  return Object.keys(filter).some((k) => k.startsWith("int#")) || // Has int# filters
+  filter.sort && filter.sort.field !== "created_at" || // Non-default sort
+  !!filter.cursor;
+}
+__name(shouldUseVideosTable, "shouldUseVideosTable");
+function buildKeysetClauseDesc(sqlCol, args, cursor) {
+  args.push(
+    cursor.sortFieldValue,
+    cursor.sortFieldValue,
+    cursor.createdAt,
+    cursor.sortFieldValue,
+    cursor.createdAt,
+    cursor.eventId
+  );
+  return ` AND (
+    (${sqlCol} < ?)
+    OR (${sqlCol} = ? AND created_at < ?)
+    OR (${sqlCol} = ? AND created_at = ? AND event_id > ?)
+  )`;
+}
+__name(buildKeysetClauseDesc, "buildKeysetClauseDesc");
+function buildKeysetClauseAsc(sqlCol, args, cursor) {
+  args.push(
+    cursor.sortFieldValue,
+    cursor.sortFieldValue,
+    cursor.createdAt,
+    cursor.sortFieldValue,
+    cursor.createdAt,
+    cursor.eventId
+  );
+  return ` AND (
+    (${sqlCol} > ?)
+    OR (${sqlCol} = ? AND created_at > ?)
+    OR (${sqlCol} = ? AND created_at = ? AND event_id > ?)
+  )`;
+}
+__name(buildKeysetClauseAsc, "buildKeysetClauseAsc");
+async function buildVideoQuery(filter, cursorSecret, previousCursorSecret) {
+  const where = [];
+  const args = [];
+  if (filter["#t"]?.length) {
+    const placeholders = filter["#t"].map(() => "?").join(",");
+    where.push(`hashtag IN (${placeholders})`);
+    args.push(...filter["#t"]);
+  }
+  for (const [key, comparison] of Object.entries(filter)) {
+    if (!key.startsWith("int#"))
+      continue;
+    const column = key.slice(4);
+    if (comparison.gte !== void 0) {
+      where.push(`${column} >= ?`);
+      args.push(comparison.gte);
+    }
+    if (comparison.gt !== void 0) {
+      where.push(`${column} > ?`);
+      args.push(comparison.gt);
+    }
+    if (comparison.lte !== void 0) {
+      where.push(`${column} <= ?`);
+      args.push(comparison.lte);
+    }
+    if (comparison.lt !== void 0) {
+      where.push(`${column} < ?`);
+      args.push(comparison.lt);
+    }
+    if (comparison.eq !== void 0) {
+      where.push(`${column} = ?`);
+      args.push(comparison.eq);
+    }
+    if (comparison.neq !== void 0) {
+      where.push(`${column} != ?`);
+      args.push(comparison.neq);
+    }
+  }
+  if (filter.since !== void 0) {
+    where.push("created_at >= ?");
+    args.push(filter.since);
+  }
+  if (filter.until !== void 0) {
+    where.push("created_at <= ?");
+    args.push(filter.until);
+  }
+  const sortField = validateSortField(filter.sort?.field);
+  const sortDir = filter.sort?.dir === "asc" ? "ASC" : "DESC";
+  let cursorClause = "";
+  if (filter.cursor) {
+    try {
+      const cursor = await decodeCursor(
+        filter.cursor,
+        filter,
+        filter.sort || { field: "created_at", dir: "desc" },
+        cursorSecret,
+        previousCursorSecret
+      );
+      if (sortDir === "DESC") {
+        cursorClause = buildKeysetClauseDesc(sortField, args, cursor);
+      } else {
+        cursorClause = buildKeysetClauseAsc(sortField, args, cursor);
+      }
+    } catch (error) {
+      throw error;
+    }
+  }
+  const limit = Math.min(filter.limit || 50, 200);
+  const fetchLimit = limit + 1;
+  const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+  const sql = `
+    SELECT event_id, author, created_at, loop_count, likes, views, comments, reposts, avg_completion, hashtag
+    FROM videos
+    ${whereClause}
+    ${cursorClause}
+    ORDER BY ${sortField} ${sortDir}, created_at ${sortDir}, event_id ASC
+    LIMIT ${fetchLimit}
+  `;
+  return { sql, args };
+}
+__name(buildVideoQuery, "buildVideoQuery");
+async function executeVideoQuery(filter, db, cursorSecret, previousCursorSecret) {
+  const { sql, args } = await buildVideoQuery(filter, cursorSecret, previousCursorSecret);
+  const result = await db.prepare(sql).bind(...args).all();
+  const rows = result.results || [];
+  const limit = Math.min(filter.limit || 50, 200);
+  const hasMore = rows.length > limit;
+  if (hasMore) {
+    rows.pop();
+  }
+  let nextCursor = null;
+  if (hasMore && rows.length > 0) {
+    const lastRow = rows[rows.length - 1];
+    const sortField = validateSortField(filter.sort?.field);
+    const sortDir = filter.sort?.dir === "asc" ? "asc" : "desc";
+    nextCursor = await createCursorFromRow(
+      lastRow,
+      sortField,
+      sortDir,
+      filter,
+      filter.sort || { field: "created_at", dir: "desc" },
+      cursorSecret
+    );
+  }
+  return { rows, nextCursor, hasMore };
+}
+__name(executeVideoQuery, "executeVideoQuery");
+async function fetchEventsForVideoRows(videoRows, db) {
+  if (videoRows.length === 0)
+    return [];
+  const eventIds = videoRows.map((v) => v.event_id);
+  const placeholders = eventIds.map(() => "?").join(",");
+  const result = await db.prepare(`
+    SELECT id, pubkey, created_at, kind, tags, content, sig
+    FROM events
+    WHERE id IN (${placeholders})
+  `).bind(...eventIds).all();
+  const eventMap = /* @__PURE__ */ new Map();
+  for (const event of result.results || []) {
+    eventMap.set(event.id, event);
+  }
+  const orderedEvents = [];
+  for (const eventId of eventIds) {
+    const event = eventMap.get(eventId);
+    if (event) {
+      const tags = typeof event.tags === "string" ? JSON.parse(event.tags) : event.tags;
+      orderedEvents.push({
+        id: event.id,
+        pubkey: event.pubkey,
+        created_at: event.created_at,
+        kind: event.kind,
+        tags,
+        content: event.content,
+        sig: event.sig
+      });
+    }
+  }
+  return orderedEvents;
+}
+__name(fetchEventsForVideoRows, "fetchEventsForVideoRows");
+
+// src/query-metrics.ts
+var _MetricsCollector = class _MetricsCollector {
+  constructor() {
+    this.metrics = [];
+    this.maxMetrics = 1e3;
+  }
+  // Keep last 1000 metrics in memory
+  /**
+   * Record a query execution
+   */
+  recordQuery(m) {
+    this.metrics.push(m);
+    if (this.metrics.length > this.maxMetrics) {
+      this.metrics.shift();
+    }
+    console.log(JSON.stringify({
+      type: "query_metrics",
+      ...m
+    }));
+  }
+  /**
+   * Record a cursor rejection
+   */
+  recordCursorRejection(reason, filter) {
+    console.log(JSON.stringify({
+      type: "cursor_rejected",
+      reason,
+      hasHashtag: !!filter["#t"],
+      hasIntFilters: Object.keys(filter).some((k) => k.startsWith("int#")),
+      timestamp: Math.floor(Date.now() / 1e3)
+    }));
+  }
+  /**
+   * Get p50 latency (median) in milliseconds
+   */
+  getP50Latency(queryType) {
+    const filtered = queryType ? this.metrics.filter((m) => m.queryType === queryType) : this.metrics;
+    if (filtered.length === 0)
+      return 0;
+    const sorted = filtered.map((m) => m.latencyMs).sort((a, b) => a - b);
+    const idx = Math.floor(sorted.length * 0.5);
+    return sorted[idx] || 0;
+  }
+  /**
+   * Get p95 latency in milliseconds
+   */
+  getP95Latency(queryType) {
+    const filtered = queryType ? this.metrics.filter((m) => m.queryType === queryType) : this.metrics;
+    if (filtered.length === 0)
+      return 0;
+    const sorted = filtered.map((m) => m.latencyMs).sort((a, b) => a - b);
+    const idx = Math.floor(sorted.length * 0.95);
+    return sorted[idx] || 0;
+  }
+  /**
+   * Get p99 latency in milliseconds
+   */
+  getP99Latency(queryType) {
+    const filtered = queryType ? this.metrics.filter((m) => m.queryType === queryType) : this.metrics;
+    if (filtered.length === 0)
+      return 0;
+    const sorted = filtered.map((m) => m.latencyMs).sort((a, b) => a - b);
+    const idx = Math.floor(sorted.length * 0.99);
+    return sorted[idx] || 0;
+  }
+  /**
+   * Get cursor rejection rate (0-1)
+   */
+  getCursorRejectionRate() {
+    const withCursor = this.metrics.filter((m) => m.hasCursor);
+    if (withCursor.length === 0)
+      return 0;
+    const rejected = withCursor.filter((m) => m.cursorRejected).length;
+    return rejected / withCursor.length;
+  }
+  /**
+   * Get query type distribution
+   */
+  getQueryTypeDistribution() {
+    const vendor = this.metrics.filter((m) => m.queryType === "vendor").length;
+    const standard = this.metrics.filter((m) => m.queryType === "standard").length;
+    return { vendor, standard };
+  }
+  /**
+   * Get summary statistics for monitoring dashboard
+   */
+  getSummary() {
+    const dist = this.getQueryTypeDistribution();
+    return {
+      totalQueries: this.metrics.length,
+      vendorQueries: dist.vendor,
+      standardQueries: dist.standard,
+      p50LatencyMs: this.getP50Latency(),
+      p95LatencyMs: this.getP95Latency(),
+      p99LatencyMs: this.getP99Latency(),
+      cursorRejectionRate: this.getCursorRejectionRate()
+    };
+  }
+  /**
+   * Clear all metrics (for testing)
+   */
+  clear() {
+    this.metrics = [];
+  }
+};
+__name(_MetricsCollector, "MetricsCollector");
+var MetricsCollector = _MetricsCollector;
+var metricsCollector = new MetricsCollector();
+
 // src/durable-object.ts
 var _RelayWebSocket = class _RelayWebSocket {
   constructor(state, env) {
@@ -5629,19 +6199,167 @@ var _RelayWebSocket = class _RelayWebSocket {
       if (!filter.limit) {
         filter.limit = 5e3;
       }
+      if (filter.kinds?.includes(34236)) {
+        let intFilterCount = 0;
+        for (const key of Object.keys(filter)) {
+          if (key.startsWith("int#")) {
+            intFilterCount++;
+            if (intFilterCount > _RelayWebSocket.MAX_INT_FILTERS) {
+              this.sendClosed(
+                session.webSocket,
+                subscriptionId,
+                `invalid: too many int# filters (max ${_RelayWebSocket.MAX_INT_FILTERS})`
+              );
+              return;
+            }
+            const columnName = key.slice(4);
+            if (!validateIntColumn(columnName)) {
+              this.sendClosed(
+                session.webSocket,
+                subscriptionId,
+                `invalid: int# column '${columnName}' not supported. Allowed: ${getIntFilterableFields().join(", ")}`
+              );
+              return;
+            }
+            const comparison = filter[key];
+            if (typeof comparison !== "object" || comparison === null) {
+              this.sendClosed(
+                session.webSocket,
+                subscriptionId,
+                `invalid: int#${columnName} must be an object with operators`
+              );
+              return;
+            }
+            for (const op of Object.keys(comparison)) {
+              if (!_RelayWebSocket.VALID_INT_OPERATORS.includes(op)) {
+                this.sendClosed(
+                  session.webSocket,
+                  subscriptionId,
+                  `invalid: operator '${op}' not supported. Allowed: ${_RelayWebSocket.VALID_INT_OPERATORS.join(", ")}`
+                );
+                return;
+              }
+              if (typeof comparison[op] !== "number" || !Number.isInteger(comparison[op])) {
+                this.sendClosed(
+                  session.webSocket,
+                  subscriptionId,
+                  `invalid: int#${columnName}.${op} must be an integer`
+                );
+                return;
+              }
+            }
+          }
+        }
+        if (filter.sort) {
+          if (typeof filter.sort !== "object" || filter.sort === null) {
+            this.sendClosed(session.webSocket, subscriptionId, "invalid: sort must be an object");
+            return;
+          }
+          if (!filter.sort.field || typeof filter.sort.field !== "string") {
+            this.sendClosed(session.webSocket, subscriptionId, "invalid: sort.field required");
+            return;
+          }
+          const validatedField = validateSortField(filter.sort.field);
+          if (validatedField === "created_at" && filter.sort.field !== "created_at") {
+            this.sendClosed(
+              session.webSocket,
+              subscriptionId,
+              `invalid: sort field '${filter.sort.field}' not supported. Allowed: ${getSortableFields().join(", ")}`
+            );
+            return;
+          }
+          if (filter.sort.dir && !["asc", "desc"].includes(filter.sort.dir)) {
+            this.sendClosed(session.webSocket, subscriptionId, 'invalid: sort.dir must be "asc" or "desc"');
+            return;
+          }
+          if (filter.limit && filter.limit > _RelayWebSocket.MAX_LIMIT) {
+            filter.limit = _RelayWebSocket.MAX_LIMIT;
+          }
+        }
+        if (filter.cursor) {
+          if (typeof filter.cursor !== "string" || filter.cursor.length === 0) {
+            this.sendClosed(session.webSocket, subscriptionId, "invalid: cursor must be non-empty string");
+            return;
+          }
+        }
+        if (filter["#t"] && Array.isArray(filter["#t"])) {
+          if (filter["#t"].length > _RelayWebSocket.MAX_HASHTAG_FILTERS) {
+            this.sendClosed(
+              session.webSocket,
+              subscriptionId,
+              `invalid: too many hashtags (max ${_RelayWebSocket.MAX_HASHTAG_FILTERS})`
+            );
+            return;
+          }
+        }
+      }
     }
     session.subscriptions.set(subscriptionId, filters);
     await this.saveSubscriptions(session.id, session.subscriptions);
     console.log(`New subscription ${subscriptionId} for session ${session.id} on DO ${this.doName}`);
     try {
-      const result = await this.getCachedOrQuery(filters, session.bookmark);
-      if (result.bookmark) {
-        session.bookmark = result.bookmark;
+      const hasVideoFilter = filters.some((f) => shouldUseVideosTable(f));
+      if (hasVideoFilter) {
+        if (filters.length > 1) {
+          this.sendClosed(
+            session.webSocket,
+            subscriptionId,
+            "invalid: vendor extensions do not support multiple filters yet"
+          );
+          return;
+        }
+        const filter = filters[0];
+        const startTime = Date.now();
+        try {
+          const cursorSecret = this.env.CURSOR_SECRET;
+          const previousCursorSecret = this.env.CURSOR_SECRET_PREVIOUS;
+          if (!cursorSecret) {
+            throw new Error("CURSOR_SECRET not configured");
+          }
+          const { rows, nextCursor, hasMore } = await executeVideoQuery(
+            filter,
+            this.env.RELAY_DATABASE,
+            cursorSecret,
+            previousCursorSecret
+          );
+          const events = await fetchEventsForVideoRows(rows, this.env.RELAY_DATABASE);
+          for (const event of events) {
+            this.sendEvent(session.webSocket, subscriptionId, event);
+          }
+          const latencyMs = Date.now() - startTime;
+          metricsCollector.recordQuery({
+            queryType: "vendor",
+            sortField: filter.sort?.field || "created_at",
+            hasHashtag: !!filter["#t"],
+            hasIntFilters: Object.keys(filter).some((k) => k.startsWith("int#")),
+            hasCursor: !!filter.cursor,
+            latencyMs,
+            rowsReturned: events.length,
+            cursorRejected: false,
+            timestamp: Math.floor(Date.now() / 1e3)
+          });
+          this.sendEOSE(session.webSocket, subscriptionId);
+          if (hasMore && nextCursor) {
+            this.sendVCursor(session.webSocket, subscriptionId, nextCursor);
+          }
+        } catch (error) {
+          if (error.message?.includes("invalid: cursor")) {
+            metricsCollector.recordCursorRejection(error.message, filter);
+            this.sendClosed(session.webSocket, subscriptionId, error.message);
+            return;
+          }
+          throw error;
+        }
+      } else {
+        const result = await this.getCachedOrQuery(filters, session.bookmark);
+        if (result.bookmark) {
+          session.bookmark = result.bookmark;
+        }
+        for (const event of result.events) {
+          this.sendEvent(session.webSocket, subscriptionId, event);
+        }
+        this.sendEOSE(session.webSocket, subscriptionId);
       }
-      for (const event of result.events) {
-        this.sendEvent(session.webSocket, subscriptionId, event);
-      }
-      this.sendEOSE(session.webSocket, subscriptionId);
     } catch (error) {
       console.error(`Error processing REQ for subscription ${subscriptionId}:`, error);
       this.sendClosed(session.webSocket, subscriptionId, "error: could not connect to the database");
@@ -5812,8 +6530,21 @@ var _RelayWebSocket = class _RelayWebSocket {
       console.error("Error sending EVENT:", error);
     }
   }
+  sendVCursor(ws, subscriptionId, cursor) {
+    try {
+      const noticeMessage = ["NOTICE", "VCURSOR", { sub: subscriptionId, cursor }];
+      ws.send(JSON.stringify(noticeMessage));
+    } catch (error) {
+      console.error("Error sending VCURSOR:", error);
+    }
+  }
 };
 __name(_RelayWebSocket, "RelayWebSocket");
+// Vendor extension limits (Phase 1: divine_extensions)
+_RelayWebSocket.MAX_LIMIT = 200;
+_RelayWebSocket.MAX_INT_FILTERS = 3;
+_RelayWebSocket.MAX_HASHTAG_FILTERS = 5;
+_RelayWebSocket.VALID_INT_OPERATORS = ["gte", "gt", "lte", "lt", "eq", "neq"];
 // Define allowed endpoints
 _RelayWebSocket.ALLOWED_ENDPOINTS = [
   "relay-WNAM-primary",

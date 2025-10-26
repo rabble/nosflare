@@ -123,11 +123,11 @@ function buildKeysetClauseAsc(
  * @param previousCursorSecret - Optional previous secret for rotation
  * @returns SQL query string and bound parameters
  */
-export function buildVideoQuery(
+export async function buildVideoQuery(
   filter: VideoFilter,
   cursorSecret: string,
   previousCursorSecret?: string
-): { sql: string; args: any[] } {
+): Promise<{ sql: string; args: any[] }> {
   const where: string[] = [];
   const args: any[] = [];
 
@@ -189,7 +189,7 @@ export function buildVideoQuery(
   let cursorClause = '';
   if (filter.cursor) {
     try {
-      const cursor = decodeCursor(
+      const cursor = await decodeCursor(
         filter.cursor,
         filter,
         filter.sort || { field: 'created_at', dir: 'desc' },
@@ -246,7 +246,7 @@ export async function executeVideoQuery(
   nextCursor: string | null;
   hasMore: boolean;
 }> {
-  const { sql, args } = buildVideoQuery(filter, cursorSecret, previousCursorSecret);
+  const { sql, args } = await buildVideoQuery(filter, cursorSecret, previousCursorSecret);
 
   const result = await db.prepare(sql).bind(...args).all();
   const rows = (result.results || []) as VideoRow[];
@@ -267,7 +267,7 @@ export async function executeVideoQuery(
     const sortField = validateSortField(filter.sort?.field);
     const sortDir = filter.sort?.dir === 'asc' ? 'asc' : 'desc';
 
-    nextCursor = createCursorFromRow(
+    nextCursor = await createCursorFromRow(
       lastRow,
       sortField,
       sortDir,
