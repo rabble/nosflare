@@ -10,50 +10,145 @@ export interface NostrEvent {
 }
 
 // Search-related types
+
+/**
+ * Types of entities that can be searched in the relay
+ * Used by NIP-50 search extensions to filter by entity type
+ */
 export type SearchEntityType = 'user' | 'video' | 'list' | 'hashtag' | 'note' | 'article' | 'community' | 'all';
 
+/**
+ * Options for performing a search query
+ * Used by the relay's search functionality
+ */
 export interface SearchOptions {
+  /** The search query string */
   query: string;
+  /** Filter results to specific entity types */
   types?: SearchEntityType[];
+  /** Filter results to specific Nostr event kinds */
   kinds?: number[];
+  /** Maximum number of results to return */
   limit?: number;
+  /** Number of results to skip (for pagination) */
   offset?: number;
+  /** Minimum relevance score threshold (0-1) */
   minRelevance?: number;
 }
 
+/**
+ * A single search result with relevance scoring
+ */
 export interface SearchResult {
+  /** The type of entity found */
   type: SearchEntityType;
+  /** The matching Nostr event */
   event: NostrEvent;
+  /** Relevance score (0-1, higher is more relevant) */
   relevance_score: number;
+  /** Text snippet showing the match context */
   snippet?: string;
+  /** Which fields matched the search query */
   match_fields?: string[];
 }
 
+/**
+ * Parsed representation of a search query with extracted filters
+ * Used internally to process search queries
+ */
 export interface ParsedSearchQuery {
+  /** Original raw search query string */
   raw: string;
+  /** Extracted search terms */
   terms: string[];
+  /** Entity type filter extracted from query */
   type?: SearchEntityType;
+  /** Structured filters extracted from query */
   filters: {
+    /** Author pubkey filter */
     author?: string;
-    kind?: number;
+    /** Event kind filters (array for consistency with NostrFilter) */
+    kinds?: number[];
+    /** Hashtag filters */
     hashtags?: string[];
+    /** Minimum timestamp filter */
     since?: number;
+    /** Maximum timestamp filter */
     until?: number;
+    /** Minimum likes threshold */
     min_likes?: number;
+    /** Minimum loop count threshold */
     min_loops?: number;
   };
 }
 
-// Extend NostrFilter to include search
+/**
+ * Nostr filter with vendor extensions for video queries
+ *
+ * Standard NIP-01 filters:
+ * - ids, authors, kinds: Event filters
+ * - since, until: Timestamp filters
+ * - limit: Result count limit
+ * - #<tag>: Tag filters (e.g., #t for hashtags, #e for event refs)
+ *
+ * Vendor extensions (nosflare-specific):
+ * - search: NIP-50 full-text search
+ * - search_types: Filter search by entity type
+ * - sort: Sort results by engagement metrics
+ * - cursor: Keyset pagination cursor
+ * - verification: Filter by ProofMode verification level
+ * - int#<metric>: Numeric comparison filters for engagement metrics
+ */
 export interface NostrFilter {
+  // Standard NIP-01 filters
   ids?: string[];
   authors?: string[];
   kinds?: number[];
   since?: number;
   until?: number;
   limit?: number;
-  search?: string;  // NIP-50
-  search_types?: SearchEntityType[];  // Extension
+
+  // Search extensions (NIP-50)
+  search?: string;
+  search_types?: SearchEntityType[];
+
+  // Vendor extensions (nosflare-specific)
+  /** Sort results by a field (default: created_at desc) */
+  sort?: {
+    /** Field name to sort by (e.g., 'loop_count', 'likes', 'created_at') */
+    field: string;
+    /** Sort direction */
+    dir: 'asc' | 'desc';
+  };
+
+  /** Keyset pagination cursor (signed, includes query hash) */
+  cursor?: string;
+
+  /** ProofMode verification level filter (e.g., ['verified_mobile', 'verified_web']) */
+  verification?: string[];
+
+  // Tag filters (dynamic)
+  /** Tag filters using # prefix (e.g., #t for hashtags, #e for event refs) */
+  [key: `#${string}`]: string[] | undefined;
+
+  // Integer comparison filters (dynamic)
+  /** Numeric comparison filters using int# prefix (e.g., int#likes, int#loop_count) */
+  [key: `int#${string}`]: {
+    /** Greater than or equal to */
+    gte?: number;
+    /** Greater than */
+    gt?: number;
+    /** Less than or equal to */
+    lte?: number;
+    /** Less than */
+    lt?: number;
+    /** Equal to */
+    eq?: number;
+    /** Not equal to */
+    neq?: number;
+  } | undefined;
+
+  // Catch-all for other extensions
   [key: string]: any;
 }
 
