@@ -3,7 +3,7 @@ import { Env, NostrEvent, NostrFilter, QueryResult, NostrMessage, Nip05Response 
 import * as config from './config';
 import { RelayWebSocket } from './durable-object';
 import { runMigrations } from './migrations';
-import { indexUserProfile, indexHashtags, indexVideo, indexNote } from './search';
+import { indexUserProfile, indexHashtags, indexVideo, indexNote, indexList } from './search';
 
 // Import config values
 const {
@@ -804,6 +804,11 @@ async function saveEventToD1(event: NostrEvent, env: Env): Promise<{ success: bo
     // Index video for search (kind 34236)
     if (event.kind === 34236) {
       await indexVideo(env.RELAY_DATABASE, event);
+    }
+
+    // Index lists for search (kinds 30000-30003)
+    if (event.kind >= 30000 && event.kind <= 30003) {
+      await indexList(env.RELAY_DATABASE, event);
     }
 
     // Index hashtags for search (all event kinds with #t tags)

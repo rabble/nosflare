@@ -367,3 +367,85 @@ export async function indexNote(
     console.error('Error indexing note:', error);
   }
 }
+
+/**
+ * Search for lists (kinds 30000-30003) in the FTS5 index
+ * Searches across name, description, and content fields
+ * Returns results ordered by relevance score
+ */
+export async function searchLists(
+  db: D1Database,
+  query: ParsedSearchQuery,
+  limit: number
+): Promise<SearchResult[]> {
+  const ftsQuery = buildFTSQuery(query.terms);
+
+  if (!ftsQuery) {
+    return [];
+  }
+
+  try {
+    const session = db.withSession('first-unconstrained');
+
+    const results = await session.prepare(`
+      SELECT
+        e.*,
+        l.rank as relevance_score,
+        snippet(lists_fts, 3, '<mark>', '</mark>', '...', 64) as snippet
+      FROM lists_fts l
+      JOIN events e ON e.id = l.event_id
+      WHERE lists_fts MATCH ?
+      ORDER BY l.rank DESC, e.created_at DESC
+      LIMIT ?
+    `).bind(ftsQuery, limit).all();
+
+    return results.results.map(r => ({
+      type: 'list' as const,
+      event: {
+        id: r.id,
+        pubkey: r.pubkey,
+        created_at: r.created_at,
+        kind: r.kind,
+        tags: JSON.parse(r.tags),
+        content: r.content,
+        sig: r.sig
+      },
+      relevance_score: Math.abs(r.relevance_score || 0),
+      snippet: r.snippet,
+      match_fields: ['name', 'description', 'content']
+    }));
+  } catch (error) {
+    console.error('List search error:', error);
+    return [];
+  }
+}
+
+/**
+ * Index a list event (kinds 30000-30003) into the FTS5 lists_fts table
+ * Extracts d_tag, name, and description from event tags
+ * Note: FTS5 doesn't support UPSERT, so we delete then insert
+ */
+export async function indexList(
+  db: D1Database,
+  event: NostrEvent
+): Promise<void> {
+  try {
+    const dTag = event.tags.find(t => t[0] === 'd')?.[1] || '';
+    const name = event.tags.find(t => t[0] === 'name')?.[1] || '';
+    const description = event.tags.find(t => t[0] === 'description')?.[1] || '';
+    const session = db.withSession('first-primary');
+
+    // Delete existing entry for this event (if any)
+    await session.prepare(`
+      DELETE FROM lists_fts WHERE event_id = ?
+    `).bind(event.id).run();
+
+    // Insert new entry
+    await session.prepare(`
+      INSERT INTO lists_fts(event_id, d_tag, kind, name, description, content)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(event.id, dTag, event.kind, name, description, event.content).run();
+  } catch (error) {
+    console.error('Error indexing list:', error);
+  }
+}
