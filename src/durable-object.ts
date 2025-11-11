@@ -14,6 +14,8 @@ import { validateSortField, validateIntColumn, getSortableFields, getIntFilterab
 import { shouldUseVideosTable, executeVideoQuery, fetchEventsForVideoRows } from './video-queries';
 import type { VideoFilter, IntComparison } from './video-queries';
 import { metricsCollector } from './query-metrics';
+import { searchUsers } from './search';
+import { parseSearchQuery } from './search-parser';
 
 // Session attachment data structure
 interface SessionAttachment {
@@ -276,6 +278,11 @@ export class RelayWebSocket implements DurableObject {
     return new Response(null, {
       status: 101,
       webSocket: client,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET',
+        'Access-Control-Allow-Headers': 'Content-Type, Upgrade, Connection, Sec-WebSocket-Key, Sec-WebSocket-Version'
+      }
     });
   }
 
@@ -786,7 +793,33 @@ export class RelayWebSocket implements DurableObject {
         }
 
       } else {
-        // Standard Nostr query (no vendor extensions)
+        // Check if any filter has a search query (NIP-50)
+        const searchFilter = filters.find(f => f.search);
+
+        if (searchFilter && searchFilter.search) {
+          // Handle search query
+          const parsed = parseSearchQuery(searchFilter.search);
+
+          // User search: type:user or kind 0
+          if (parsed.type === 'user' || searchFilter.kinds?.includes(0)) {
+            const searchResults = await searchUsers(
+              this.env.RELAY_DATABASE,
+              parsed,
+              searchFilter.limit || 50
+            );
+
+            // Send search results
+            for (const result of searchResults) {
+              this.sendEvent(session.webSocket, subscriptionId, result.event);
+            }
+
+            // Send EOSE
+            this.sendEOSE(session.webSocket, subscriptionId);
+            return;
+          }
+        }
+
+        // Standard Nostr query (no vendor extensions, no search)
         const result = await this.getCachedOrQuery(filters, session.bookmark);
 
         // Update session bookmark

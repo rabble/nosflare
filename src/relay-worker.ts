@@ -3,10 +3,12 @@ import { Env, NostrEvent, NostrFilter, QueryResult, NostrMessage, Nip05Response 
 import * as config from './config';
 import { RelayWebSocket } from './durable-object';
 import { runMigrations } from './migrations';
+import { indexUserProfile } from './search';
 
 // Import config values
 const {
   relayInfo,
+  getRelayInfo,
   PAY_TO_RELAY_ENABLED,
   RELAY_ACCESS_PRICE_SATS,
   relayNpub,
@@ -44,6 +46,9 @@ interface ArchiveManifest {
 
 // Database initialization
 async function initializeDatabase(db: D1Database): Promise<void> {
+  // ALWAYS run migrations first (they're idempotent)
+  await runMigrations(db);
+
   try {
     const session = db.withSession('first-unconstrained');
     const initCheck = await session.prepare(
@@ -51,7 +56,7 @@ async function initializeDatabase(db: D1Database): Promise<void> {
     ).first().catch(() => null);
 
     if (initCheck && initCheck.value === '1') {
-      console.log("Database already initialized");
+      console.log("Database already initialized, migrations complete");
       return;
     }
   } catch (error) {
@@ -173,10 +178,7 @@ async function initializeDatabase(db: D1Database): Promise<void> {
     await session.prepare("ANALYZE tags").run();
     await session.prepare("ANALYZE event_tags_cache").run();
 
-    // Run schema migrations (creates videos table with composite indexes)
-    await runMigrations(db);
-
-    // Analyze videos table if it exists
+    // Analyze videos table if it exists (created by migrations)
     try {
       await session.prepare("ANALYZE videos").run();
     } catch (e) {
@@ -522,6 +524,16 @@ async function processEvent(event: NostrEvent, sessionId: string, env: Env): Pro
   }
 }
 
+// Helper function to check if event kind is replaceable
+function isReplaceableKind(kind: number): boolean {
+  // Regular replaceable: 0, 3, and 10000-19999
+  if (kind === 0 || kind === 3) return true;
+  if (kind >= 10000 && kind < 20000) return true;
+  // Parameterized replaceable: 30000-39999 (requires 'd' tag matching)
+  if (kind >= 30000 && kind < 40000) return true;
+  return false;
+}
+
 async function saveEventToD1(event: NostrEvent, env: Env): Promise<{ success: boolean; message: string }> {
   try {
     const session = env.RELAY_DATABASE.withSession('first-primary');
@@ -538,7 +550,53 @@ async function saveEventToD1(event: NostrEvent, env: Env): Promise<{ success: bo
       }
     }
 
-    // Insert the main event first
+    // Handle replaceable events (NIP-01)
+    if (isReplaceableKind(event.kind)) {
+      // For parameterized replaceable events (30000-39999), match on 'd' tag too
+      const isParameterized = event.kind >= 30000 && event.kind < 40000;
+
+      if (isParameterized) {
+        const dTag = event.tags.find(t => t[0] === 'd')?.[1] || '';
+
+        // Check for existing event with same pubkey, kind, and d tag
+        const existing = await session.prepare(`
+          SELECT id, created_at, tags FROM events
+          WHERE pubkey = ? AND kind = ?
+          ORDER BY created_at DESC LIMIT 1
+        `).bind(event.pubkey, event.kind).first();
+
+        if (existing) {
+          const existingTags = JSON.parse(existing.tags as string);
+          const existingDTag = existingTags.find((t: string[]) => t[0] === 'd')?.[1] || '';
+
+          // Only replace if d tag matches
+          if (existingDTag === dTag) {
+            if ((existing.created_at as number) > event.created_at) {
+              return { success: false, message: "duplicate: newer event already exists" };
+            }
+            // Delete older event
+            await session.prepare(`DELETE FROM events WHERE id = ?`).bind(existing.id).run();
+          }
+        }
+      } else {
+        // Regular replaceable events (0, 3, 10000-19999)
+        const existing = await session.prepare(`
+          SELECT id, created_at FROM events
+          WHERE pubkey = ? AND kind = ?
+          ORDER BY created_at DESC LIMIT 1
+        `).bind(event.pubkey, event.kind).first();
+
+        if (existing) {
+          if ((existing.created_at as number) > event.created_at) {
+            return { success: false, message: "duplicate: newer event already exists" };
+          }
+          // Delete older event
+          await session.prepare(`DELETE FROM events WHERE id = ?`).bind(existing.id).run();
+        }
+      }
+    }
+
+    // Insert the main event
     await session.prepare(`
       INSERT INTO events (id, pubkey, created_at, kind, tags, content, sig)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -621,24 +679,121 @@ async function saveEventToD1(event: NostrEvent, env: Env): Promise<{ success: bo
         const tTags = event.tags.filter(t => t[0] === 't');
         const hashtag = tTags.length > 0 ? tTags[0][1] : null;
 
+        // Extract ProofMode verification tags
+        const verificationTag = event.tags.find(t => t[0] === 'verification');
+        const proofmodeTag = event.tags.find(t => t[0] === 'proofmode');
+        const deviceAttestationTag = event.tags.find(t => t[0] === 'device_attestation');
+        const pgpFingerprintTag = event.tags.find(t => t[0] === 'pgp_fingerprint');
+
+        // Determine verification level and flags
+        const verificationLevel = verificationTag?.[1] || null;
+        const hasProofmode = proofmodeTag ? 1 : 0;
+        const hasDeviceAttestation = deviceAttestationTag ? 1 : 0;
+        const hasPgpSignature = pgpFingerprintTag ? 1 : 0;
+
         // Upsert into videos table (no foreign key constraint to avoid issues)
         await session.prepare(`
-          INSERT INTO videos (event_id, author, created_at, loop_count, likes, comments, reposts, views, avg_completion, hashtag)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+          INSERT INTO videos (
+            event_id, author, created_at, loop_count, likes, comments, reposts, views, avg_completion, hashtag,
+            verification_level, has_proofmode, has_device_attestation, has_pgp_signature
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
           ON CONFLICT(event_id) DO UPDATE SET
             loop_count = excluded.loop_count,
             likes = excluded.likes,
             comments = excluded.comments,
             reposts = excluded.reposts,
             views = excluded.views,
-            hashtag = excluded.hashtag
-        `).bind(event.id, event.pubkey, event.created_at, loopCount, likes, comments, reposts, views, hashtag).run();
+            hashtag = excluded.hashtag,
+            verification_level = excluded.verification_level,
+            has_proofmode = excluded.has_proofmode,
+            has_device_attestation = excluded.has_device_attestation,
+            has_pgp_signature = excluded.has_pgp_signature
+        `).bind(
+          event.id, event.pubkey, event.created_at, loopCount, likes, comments, reposts, views, hashtag,
+          verificationLevel, hasProofmode, hasDeviceAttestation, hasPgpSignature
+        ).run();
 
         console.log(`Video metrics saved for event ${event.id}`);
+
+        // Extract and store #t tags (hashtags) in video_hashtags junction table
+        const uniqueTTags = [...new Set(tTags.map(t => t[1]).filter(h => h))]; // Deduplicate and filter empty
+
+        // Delete existing hashtags first (since kind 34236 is replaceable, tags can change)
+        await session.prepare(`
+          DELETE FROM video_hashtags WHERE event_id = ?
+        `).bind(event.id).run();
+
+        // Insert new hashtags
+        for (const tag of uniqueTTags) {
+          await session.prepare(`
+            INSERT INTO video_hashtags (event_id, hashtag)
+            VALUES (?, ?)
+            ON CONFLICT DO NOTHING
+          `).bind(event.id, tag).run();
+        }
+
+        if (uniqueTTags.length > 0) {
+          console.log(`Stored ${uniqueTTags.length} #t tag(s) for event ${event.id}`);
+        }
+
+        // Extract and store #p tags (mentions) in video_mentions junction table
+        const pTags = event.tags.filter(t => t[0] === 'p' && t[1]);
+        const uniquePTags = [...new Set(pTags.map(t => t[1]))]; // Deduplicate
+
+        for (const pubkey of uniquePTags) {
+          await session.prepare(`
+            INSERT INTO video_mentions (event_id, pubkey)
+            VALUES (?, ?)
+            ON CONFLICT DO NOTHING
+          `).bind(event.id, pubkey).run();
+        }
+
+        if (uniquePTags.length > 0) {
+          console.log(`Stored ${uniquePTags.length} #p tag(s) for event ${event.id}`);
+        }
+
+        // Extract and store #e tags (references) in video_references junction table
+        const eTags = event.tags.filter(t => t[0] === 'e' && t[1]);
+        const uniqueETags = [...new Set(eTags.map(t => t[1]))]; // Deduplicate
+
+        for (const refEventId of uniqueETags) {
+          await session.prepare(`
+            INSERT INTO video_references (event_id, referenced_event_id)
+            VALUES (?, ?)
+            ON CONFLICT DO NOTHING
+          `).bind(event.id, refEventId).run();
+        }
+
+        if (uniqueETags.length > 0) {
+          console.log(`Stored ${uniqueETags.length} #e tag(s) for event ${event.id}`);
+        }
+
+        // Extract and store #a tags (addresses) in video_addresses junction table
+        const aTags = event.tags.filter(t => t[0] === 'a' && t[1]);
+        const uniqueATags = [...new Set(aTags.map(t => t[1]))]; // Deduplicate
+
+        for (const address of uniqueATags) {
+          await session.prepare(`
+            INSERT INTO video_addresses (event_id, address)
+            VALUES (?, ?)
+            ON CONFLICT DO NOTHING
+          `).bind(event.id, address).run();
+        }
+
+        if (uniqueATags.length > 0) {
+          console.log(`Stored ${uniqueATags.length} #a tag(s) for event ${event.id}`);
+        }
+
       } catch (videoError: any) {
         // Don't fail the whole event if video metrics fail
         console.error(`Error saving video metrics for ${event.id}:`, videoError.message);
       }
+    }
+
+    // Index user profile for search (kind 0)
+    if (event.kind === 0) {
+      await indexUserProfile(env.RELAY_DATABASE, event);
     }
 
     console.log(`Event ${event.id} saved successfully to D1.`);
@@ -2013,8 +2168,8 @@ async function queryEventsWithArchive(filters: NostrFilter[], bookmark: string, 
 }
 
 // HTTP endpoints
-function handleRelayInfoRequest(request: Request): Response {
-  const responseInfo = { ...relayInfo };
+function handleRelayInfoRequest(request: Request, env: Env): Response {
+  const responseInfo = { ...getRelayInfo(env) };
 
   if (PAY_TO_RELAY_ENABLED) {
     const url = new URL(request.url);
@@ -2035,7 +2190,653 @@ function handleRelayInfoRequest(request: Request): Response {
   });
 }
 
-function serveLandingPage(): Response {
+function serveDocumentation(): Response {
+  const docsHtml = `<h1>Developer Documentation</h1>
+<h2>Divine Video Relay - Video Discovery & Sorting</h2>
+<h3>Overview</h3>
+<p>The Divine Video relay (relay.divine.video) is a specialized Nostr relay with custom vendor extensions for discovering and sorting short-form videos by engagement metrics.</p>
+<h3>Relay Information</h3>
+<ul>
+<li><strong>URL</strong>: <code>wss://relay.divine.video</code></li>
+<li><strong>Video Event Kind</strong>: <code>34236</code> (vertical video)</li>
+<li><strong>Supported Metrics</strong>: <code>loop_count</code>, <code>likes</code>, <code>views</code>, <code>comments</code>, <code>avg_completion</code></li>
+</ul>
+<hr>
+<h2>Quick Start</h2>
+<h3>JavaScript / Node.js</h3>
+<pre><code class="language-javascript">import WebSocket from &#39;ws&#39;;
+
+const ws = new WebSocket(&#39;wss://relay.divine.video&#39;);
+
+ws.on(&#39;open&#39;, () =&gt; {
+  // Query trending videos
+  ws.send(JSON.stringify([
+    &#39;REQ&#39;,
+    &#39;trending&#39;,
+    {
+      kinds: [34236],
+      sort: { field: &#39;loop_count&#39;, dir: &#39;desc&#39; },
+      limit: 20
+    }
+  ]));
+});
+
+ws.on(&#39;message&#39;, (data) =&gt; {
+  const [type, subId, event] = JSON.parse(data);
+  if (type === &#39;EVENT&#39;) {
+    console.log(&#39;Video:&#39;, event);
+  }
+});
+</code></pre>
+<h3>Python</h3>
+<pre><code class="language-python">import websocket
+import json
+
+ws = websocket.create_connection(&#39;wss://relay.divine.video&#39;)
+
+# Query trending videos
+query = [&#39;REQ&#39;, &#39;trending&#39;, {
+    &#39;kinds&#39;: [34236],
+    &#39;sort&#39;: {&#39;field&#39;: &#39;loop_count&#39;, &#39;dir&#39;: &#39;desc&#39;},
+    &#39;limit&#39;: 20
+}]
+ws.send(json.dumps(query))
+
+while True:
+    message = json.loads(ws.recv())
+    if message[0] == &#39;EVENT&#39;:
+        print(f&#39;Video: {message[2]}&#39;)
+    elif message[0] == &#39;EOSE&#39;:
+        break
+</code></pre>
+<h3>Using wscat (testing)</h3>
+<pre><code class="language-bash">wscat -c wss://relay.divine.video
+
+# Then send:
+[&quot;REQ&quot;,&quot;test&quot;,{&quot;kinds&quot;:[34236],&quot;sort&quot;:{&quot;field&quot;:&quot;loop_count&quot;,&quot;dir&quot;:&quot;desc&quot;},&quot;limit&quot;:5}]
+</code></pre>
+<hr>
+<h2>Basic Query Structure</h2>
+<p>All queries follow standard Nostr REQ format with added vendor extensions:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;subscription_id&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;loop_count&quot;,  // or &quot;likes&quot;, &quot;views&quot;, &quot;comments&quot;, &quot;avg_completion&quot;, &quot;created_at&quot;
+    &quot;dir&quot;: &quot;desc&quot;           // or &quot;asc&quot;
+  },
+  &quot;limit&quot;: 20
+}]
+</code></pre>
+<hr>
+<h2>Common Query Examples</h2>
+<h3>1. Most Looped Videos (Trending)</h3>
+<p>Get videos with the most loops (plays):</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;trending&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;loop_count&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 50
+}]
+</code></pre>
+<h3>2. Most Liked Videos</h3>
+<p>Get videos sorted by number of likes:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;most-liked&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;likes&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 50
+}]
+</code></pre>
+<h3>3. Most Viewed Videos</h3>
+<p>Get videos sorted by view count:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;most-viewed&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;views&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 50
+}]
+</code></pre>
+<h3>4. Newest Videos First</h3>
+<p>Get most recently published videos:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;newest&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;created_at&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 50
+}]
+</code></pre>
+<hr>
+<h2>Filtering by Engagement Metrics</h2>
+<p>Use <code>int#&lt;metric&gt;</code> filters to set thresholds:</p>
+<h3>5. Popular Videos (minimum threshold)</h3>
+<p>Get videos with at least 100 likes:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;popular&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;int#likes&quot;: {&quot;gte&quot;: 100},
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;loop_count&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 20
+}]
+</code></pre>
+<h3>6. Range Queries</h3>
+<p>Get videos with 10-100 likes:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;moderate-engagement&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;int#likes&quot;: {
+    &quot;gte&quot;: 10,
+    &quot;lte&quot;: 100
+  },
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;created_at&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 50
+}]
+</code></pre>
+<h3>7. Highly Engaged Videos</h3>
+<p>Combine multiple metric filters:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;highly-engaged&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;int#likes&quot;: {&quot;gte&quot;: 50},
+  &quot;int#loop_count&quot;: {&quot;gte&quot;: 1000},
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;likes&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 20
+}]
+</code></pre>
+<hr>
+<h2>Hashtag Filtering</h2>
+<h3>8. Videos by Hashtag</h3>
+<p>Get videos tagged with specific hashtags:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;music-videos&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;#t&quot;: [&quot;music&quot;],
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;likes&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 20
+}]
+</code></pre>
+<h3>9. Multiple Hashtags (OR logic)</h3>
+<p>Videos with ANY of these tags:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;entertainment&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;#t&quot;: [&quot;music&quot;, &quot;dance&quot;, &quot;comedy&quot;],
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;loop_count&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 50
+}]
+</code></pre>
+<hr>
+<h2>Author Queries</h2>
+<h3>10. Videos by Specific Author</h3>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;author-videos&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;authors&quot;: [&quot;pubkey_hex_here&quot;],
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;created_at&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 20
+}]
+</code></pre>
+<h3>11. Top Videos by Author</h3>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;author-top-videos&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;authors&quot;: [&quot;pubkey_hex_here&quot;],
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;loop_count&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 10
+}]
+</code></pre>
+<hr>
+<h2>Pagination</h2>
+<h3>12. Using Cursors for Infinite Scroll</h3>
+<p>The relay returns a cursor in the EOSE message for pagination:</p>
+<pre><code class="language-javascript">// Send initial query
+ws.send(JSON.stringify([&#39;REQ&#39;, &#39;feed&#39;, {
+  kinds: [34236],
+  sort: {field: &#39;loop_count&#39;, dir: &#39;desc&#39;},
+  limit: 20
+}]));
+
+// Listen for EOSE message with cursor
+ws.on(&#39;message&#39;, (data) =&gt; {
+  const message = JSON.parse(data);
+
+  if (message[0] === &#39;EOSE&#39;) {
+    const subscriptionId = message[1];
+    const cursor = message[2]; // Cursor for next page
+
+    if (cursor) {
+      // Fetch next page
+      ws.send(JSON.stringify([&#39;REQ&#39;, &#39;feed-page-2&#39;, {
+        kinds: [34236],
+        sort: {field: &#39;loop_count&#39;, dir: &#39;desc&#39;},
+        limit: 20,
+        cursor: cursor
+      }]));
+    }
+  }
+});
+</code></pre>
+<hr>
+<h2>Available Metrics</h2>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Description</th>
+<th>Tag Name</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>loop_count</code></td>
+<td>Number of times video was looped/replayed</td>
+<td><code>loops</code></td>
+</tr>
+<tr>
+<td><code>likes</code></td>
+<td>Number of likes</td>
+<td><code>likes</code></td>
+</tr>
+<tr>
+<td><code>views</code></td>
+<td>Number of views</td>
+<td><code>views</code></td>
+</tr>
+<tr>
+<td><code>comments</code></td>
+<td>Number of comments</td>
+<td><code>comments</code></td>
+</tr>
+<tr>
+<td><code>avg_completion</code></td>
+<td>Average completion rate (0-100)</td>
+<td>Not in tags yet</td>
+</tr>
+<tr>
+<td><code>created_at</code></td>
+<td>Unix timestamp of publication</td>
+<td>Event&#39;s <code>created_at</code></td>
+</tr>
+</tbody></table>
+<hr>
+<h2>Reading Metrics from Events</h2>
+<p>When you receive an EVENT, metrics are in the tags array:</p>
+<pre><code class="language-javascript">ws.on(&#39;message&#39;, (data) =&gt; {
+  const [type, subId, event] = JSON.parse(data);
+
+  if (type === &#39;EVENT&#39;) {
+    // Extract metrics from tags
+    const loops = getTagValue(event.tags, &#39;loops&#39;);
+    const likes = getTagValue(event.tags, &#39;likes&#39;);
+    const views = getTagValue(event.tags, &#39;views&#39;);
+    const comments = getTagValue(event.tags, &#39;comments&#39;);
+    const vineId = getTagValue(event.tags, &#39;d&#39;); // Original Vine ID
+
+    console.log(\`Video \${vineId}: \${loops} loops, \${likes} likes\`);
+  }
+});
+
+function getTagValue(tags, tagName) {
+  const tag = tags.find(t =&gt; t[0] === tagName);
+  return tag ? parseInt(tag[1]) || 0 : 0;
+}
+</code></pre>
+<pre><code class="language-python"># Python example
+def handle_event(event):
+    tags = event[&#39;tags&#39;]
+
+    # Extract metrics
+    loops = get_tag_value(tags, &#39;loops&#39;)
+    likes = get_tag_value(tags, &#39;likes&#39;)
+    views = get_tag_value(tags, &#39;views&#39;)
+    vine_id = get_tag_value(tags, &#39;d&#39;)
+
+    print(f&#39;Video {vine_id}: {loops} loops, {likes} likes&#39;)
+
+def get_tag_value(tags, tag_name):
+    for tag in tags:
+        if tag[0] == tag_name:
+            return int(tag[1]) if len(tag) &gt; 1 else 0
+    return 0
+</code></pre>
+<hr>
+<h2>Feed Recommendations</h2>
+<h3>For You Feed</h3>
+<p>Trending content from last 24 hours:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;for-you&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;since&quot;: 1704067200,
+  &quot;sort&quot;: {&quot;field&quot;: &quot;loop_count&quot;, &quot;dir&quot;: &quot;desc&quot;},
+  &quot;limit&quot;: 50
+}]
+</code></pre>
+<h3>Discover Feed</h3>
+<p>High engagement, diverse content:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;discover&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;int#likes&quot;: {&quot;gte&quot;: 20},
+  &quot;int#loop_count&quot;: {&quot;gte&quot;: 500},
+  &quot;sort&quot;: {&quot;field&quot;: &quot;created_at&quot;, &quot;dir&quot;: &quot;desc&quot;},
+  &quot;limit&quot;: 100
+}]
+</code></pre>
+<h3>Trending Feed</h3>
+<p>Pure virality - most loops:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;trending&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;sort&quot;: {&quot;field&quot;: &quot;loop_count&quot;, &quot;dir&quot;: &quot;desc&quot;},
+  &quot;limit&quot;: 50
+}]
+</code></pre>
+<hr>
+<h2>Rate Limits</h2>
+<ul>
+<li><strong>Maximum limit per query</strong>: 200 events</li>
+<li><strong>Query rate</strong>: Up to 50 REQ messages per minute per connection</li>
+<li><strong>Publish rate</strong>: Up to 10 EVENT messages per minute per pubkey</li>
+</ul>
+<hr>
+<h2>Error Handling</h2>
+<p>The relay will send a CLOSED message if a query is invalid:</p>
+<pre><code class="language-javascript">ws.on(&#39;message&#39;, (data) =&gt; {
+  const message = JSON.parse(data);
+
+  if (message[0] === &#39;CLOSED&#39;) {
+    const subscriptionId = message[1];
+    const reason = message[2];
+    console.log(\`Subscription \${subscriptionId} closed: \${reason}\`);
+
+    // Common reasons:
+    // - &#39;invalid: unsupported sort field&#39;
+    // - &#39;invalid: limit exceeds maximum (200)&#39;
+    // - &#39;blocked: kinds [...] not allowed&#39;
+  }
+});
+</code></pre>
+<hr>
+<h2>Testing</h2>
+<p>You can test queries using wscat:</p>
+<pre><code class="language-bash"># Connect to relay
+wscat -c wss://relay.divine.video
+
+# Send query (paste this after connecting)
+[&quot;REQ&quot;, &quot;test&quot;, {&quot;kinds&quot;: [34236], &quot;sort&quot;: {&quot;field&quot;: &quot;loop_count&quot;, &quot;dir&quot;: &quot;desc&quot;}, &quot;limit&quot;: 5}]
+</code></pre>
+<hr>
+<h2>NIP-11 Relay Information (Discovery)</h2>
+<h3>Checking Relay Capabilities</h3>
+<p>Before using vendor extensions, check the relay&#39;s NIP-11 document to verify support:</p>
+<pre><code class="language-bash">curl -H &quot;Accept: application/nostr+json&quot; https://relay.divine.video
+</code></pre>
+<h3>JavaScript Example</h3>
+<pre><code class="language-javascript">async function getRelayCapabilities(relayUrl) {
+  // Convert wss:// to https://
+  const httpUrl = relayUrl.replace(&#39;wss://&#39;, &#39;https://&#39;).replace(&#39;ws://&#39;, &#39;http://&#39;);
+
+  const response = await fetch(httpUrl, {
+    headers: {&#39;Accept&#39;: &#39;application/nostr+json&#39;}
+  });
+
+  const relayInfo = await response.json();
+
+  if (relayInfo.divine_extensions) {
+    console.log(&#39;Supported sort fields:&#39;, relayInfo.divine_extensions.sort_fields);
+    console.log(&#39;Supported filters:&#39;, relayInfo.divine_extensions.int_filters);
+    console.log(&#39;Max limit:&#39;, relayInfo.divine_extensions.limit_max);
+  }
+
+  return relayInfo;
+}
+
+// Usage
+const info = await getRelayCapabilities(&#39;wss://relay.divine.video&#39;);
+</code></pre>
+<h3>Python Example</h3>
+<pre><code class="language-python">import requests
+
+def get_relay_capabilities(relay_url):
+    http_url = relay_url.replace(&#39;wss://&#39;, &#39;https://&#39;).replace(&#39;ws://&#39;, &#39;http://&#39;)
+
+    response = requests.get(http_url, headers={
+        &#39;Accept&#39;: &#39;application/nostr+json&#39;
+    })
+
+    relay_info = response.json()
+
+    if &#39;divine_extensions&#39; in relay_info:
+        print(f&quot;Supported sort fields: {relay_info[&#39;divine_extensions&#39;][&#39;sort_fields&#39;]}&quot;)
+        print(f&quot;Supported filters: {relay_info[&#39;divine_extensions&#39;][&#39;int_filters&#39;]}&quot;)
+
+    return relay_info
+
+# Usage
+info = get_relay_capabilities(&#39;wss://relay.divine.video&#39;)
+</code></pre>
+<h3>Example NIP-11 Response</h3>
+<pre><code class="language-json">{
+  &quot;name&quot;: &quot;Divine Video Relay&quot;,
+  &quot;description&quot;: &quot;A specialized Nostr relay for Divine Video&#39;s 6-second short-form videos&quot;,
+  &quot;supported_nips&quot;: [1, 2, 4, 5, 9, 11, 12, 15, 16, 17, 20, 22, 33, 40],
+  &quot;divine_extensions&quot;: {
+    &quot;int_filters&quot;: [&quot;loop_count&quot;, &quot;likes&quot;, &quot;views&quot;, &quot;comments&quot;, &quot;avg_completion&quot;],
+    &quot;sort_fields&quot;: [&quot;loop_count&quot;, &quot;likes&quot;, &quot;views&quot;, &quot;comments&quot;, &quot;avg_completion&quot;, &quot;created_at&quot;],
+    &quot;cursor_format&quot;: &quot;base64url-encoded HMAC-SHA256 with query hash binding&quot;,
+    &quot;videos_kind&quot;: 34236,
+    &quot;metrics_freshness_sec&quot;: 3600,
+    &quot;limit_max&quot;: 200
+  }
+}
+</code></pre>
+<h3>What Each Field Means</h3>
+<ul>
+<li><strong><code>int_filters</code></strong>: Metrics you can use with <code>int#&lt;metric&gt;</code> filters (e.g., <code>int#likes</code>)</li>
+<li><strong><code>sort_fields</code></strong>: Fields you can use in the <code>sort</code> parameter</li>
+<li><strong><code>cursor_format</code></strong>: How pagination cursors are generated (for security)</li>
+<li><strong><code>videos_kind</code></strong>: The Nostr event kind for videos (34236)</li>
+<li><strong><code>metrics_freshness_sec</code></strong>: How often metrics are updated (hourly = 3600 seconds)</li>
+<li><strong><code>limit_max</code></strong>: Maximum events you can request in a single query (200)</li>
+</ul>
+<hr>
+<h2>Support</h2>
+<p>For questions or issues:</p>
+<ul>
+<li>GitHub: <a href="https://github.com/rabble/nosflare">https://github.com/rabble/nosflare</a></li>
+<li>Relay Maintainer: <a href="mailto:relay@divine.video">relay@divine.video</a></li>
+</ul>
+`;
+
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Developer documentation for integrating with Divine Video relay - WebSocket API examples in JavaScript, Python, and more" />
+    <title>Developer Documentation - Divine Video Relay</title>
+    <link href="https://fonts.googleapis.com/css2?family=Pacifico&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: #ffffff;
+            color: #333333;
+            line-height: 1.6;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #00BFA5 0%, #00897B 100%);
+            color: white;
+            padding: 2rem;
+            text-align: center;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .logo {
+            font-family: 'Pacifico', cursive;
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .back-link {
+            display: inline-block;
+            color: #00BFA5;
+            text-decoration: none;
+            margin-bottom: 2rem;
+            font-weight: 500;
+        }
+
+        .back-link:hover {
+            text-decoration: underline;
+        }
+
+        .content {
+            background: white;
+        }
+
+        .content h1 {
+            color: #00BFA5;
+            margin-top: 2rem;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid #00BFA5;
+        }
+
+        .content h2 {
+            color: #00897B;
+            margin-top: 1.5rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .content h3 {
+            color: #333;
+            margin-top: 1.25rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .content p {
+            margin-bottom: 1rem;
+        }
+
+        .content ul, .content ol {
+            margin-left: 2rem;
+            margin-bottom: 1rem;
+        }
+
+        .content li {
+            margin-bottom: 0.5rem;
+        }
+
+        .content pre {
+            background: #1e1e1e;
+            border-radius: 8px;
+            padding: 1rem;
+            overflow-x: auto;
+            margin-bottom: 1rem;
+            color: #fff;
+        }
+
+        .content code {
+            font-family: 'Courier New', Courier, monospace;
+            background: #f5f5f5;
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+
+        .content pre code {
+            background: transparent;
+            padding: 0;
+            color: #61afef;
+        }
+
+        .content table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1rem;
+        }
+
+        .content th, .content td {
+            border: 1px solid #ddd;
+            padding: 0.75rem;
+            text-align: left;
+        }
+
+        .content th {
+            background: #00BFA5;
+            color: white;
+        }
+
+        .content tr:nth-child(even) {
+            background: #f9f9f9;
+        }
+
+        .content hr {
+            border: none;
+            border-top: 2px solid #e0e0e0;
+            margin: 2rem 0;
+        }
+
+        .content a {
+            color: #00BFA5;
+            text-decoration: none;
+        }
+
+        .content a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo">diVine Relay</div>
+        <p>Developer Documentation</p>
+    </div>
+
+    <div class="container">
+        <a href="/" class="back-link">← Back to Home</a>
+        <div class="content">
+            ${docsHtml}
+        </div>
+    </div>
+</body>
+</html>
+`;
+
+  return new Response(html, {
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
+}function serveLandingPage(): Response {
   const payToRelaySection = PAY_TO_RELAY_ENABLED ? `
     <div class="pay-section" id="paySection">
       <p style="margin-bottom: 1rem;">Pay to access this relay:</p>
@@ -2263,9 +3064,9 @@ function serveLandingPage(): Response {
         
         <div class="links">
             <a href="https://divine.video" class="link primary" target="_blank">Get the App</a>
+            <a href="/docs" class="link">Developer Docs</a>
             <a href="https://divine.video/about" class="link" target="_blank">About Divine Video</a>
             <a href="https://divine.video/proofmode" class="link" target="_blank">What is ProofMode?</a>
-            <a href="https://divine.video/nostr" class="link" target="_blank">About Nostr</a>
         </div>
     </div>
     
@@ -2687,6 +3488,19 @@ export default {
         return await handleCheckPayment(request, env);
       }
 
+      // Handle CORS preflight requests
+      if (request.method === "OPTIONS") {
+        return new Response(null, {
+          status: 204,
+          headers: {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Accept, Upgrade, Connection, Sec-WebSocket-Key, Sec-WebSocket-Version, Sec-WebSocket-Protocol',
+            'Access-Control-Max-Age': '86400'
+          }
+        });
+      }
+
       // Main endpoints
       if (url.pathname === "/") {
         if (request.headers.get("Upgrade") === "websocket") {
@@ -2706,7 +3520,7 @@ export default {
 
           return stub.fetch(new Request(newUrl, request));
         } else if (request.headers.get("Accept") === "application/nostr+json") {
-          return handleRelayInfoRequest(request);
+          return handleRelayInfoRequest(request, env);
         } else {
           // Initialize database in background
           ctx.waitUntil(
@@ -2719,6 +3533,17 @@ export default {
         return handleNIP05Request(url);
       } else if (url.pathname === "/favicon.ico") {
         return await serveFavicon();
+      } else if (url.pathname === "/docs") {
+        return serveDocumentation();
+      } else if (url.pathname === "/_migrations") {
+        // Debug endpoint to check migration status
+        const migrations = await env.RELAY_DATABASE.prepare(
+          'SELECT version, description, datetime(applied_at, "unixepoch") as applied FROM schema_migrations ORDER BY version'
+        ).all();
+        const tables = await env.RELAY_DATABASE.prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).all();
+        return Response.json({ migrations: migrations.results, tables: tables.results });
       } else {
         return new Response("Invalid request", { status: 400 });
       }
