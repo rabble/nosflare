@@ -613,3 +613,46 @@ export async function indexCommunity(
     console.error('Error indexing community:', error);
   }
 }
+
+/**
+ * Unified search across all entity types
+ * Searches users, videos, lists, notes, articles, and communities in parallel
+ * Allocates per-type limits as a percentage of total limit:
+ *   - Users: 15%
+ *   - Videos: 35%
+ *   - Lists: 10%
+ *   - Notes: 25%
+ *   - Articles: 10%
+ *   - Communities: 5%
+ * Returns merged results sorted by relevance score
+ */
+export async function searchUnified(
+  db: D1Database,
+  query: ParsedSearchQuery,
+  limit: number
+): Promise<SearchResult[]> {
+  // Search all entity types in parallel with allocated limits
+  const [users, videos, lists, notes, articles, communities] = await Promise.all([
+    searchUsers(db, query, Math.ceil(limit * 0.15)),       // 15%
+    searchVideos(db, query, Math.ceil(limit * 0.35)),      // 35%
+    searchLists(db, query, Math.ceil(limit * 0.10)),       // 10%
+    searchNotes(db, query, Math.ceil(limit * 0.25)),       // 25%
+    searchArticles(db, query, Math.ceil(limit * 0.10)),    // 10%
+    searchCommunities(db, query, Math.ceil(limit * 0.05))  // 5%
+  ]);
+
+  // Merge all results
+  const allResults = [
+    ...users,
+    ...videos,
+    ...lists,
+    ...notes,
+    ...articles,
+    ...communities
+  ];
+
+  // Sort by relevance score and return top N results
+  return allResults
+    .sort((a, b) => b.relevance_score - a.relevance_score)
+    .slice(0, limit);
+}

@@ -14,7 +14,7 @@ import { validateSortField, validateIntColumn, getSortableFields, getIntFilterab
 import { shouldUseVideosTable, executeVideoQuery, fetchEventsForVideoRows } from './video-queries';
 import type { VideoFilter, IntComparison } from './video-queries';
 import { metricsCollector } from './query-metrics';
-import { searchUsers, searchHashtags, searchVideos, searchNotes, searchLists, searchArticles, searchCommunities } from './search';
+import { searchUsers, searchHashtags, searchVideos, searchNotes, searchLists, searchArticles, searchCommunities, searchUnified } from './search';
 import { parseSearchQuery } from './search-parser';
 
 // Session attachment data structure
@@ -913,6 +913,25 @@ export class RelayWebSocket implements DurableObject {
           // Community search: type:community or kind 34550
           if (parsed.type === 'community' || searchFilter.kinds?.includes(34550)) {
             const searchResults = await searchCommunities(
+              this.env.RELAY_DATABASE,
+              parsed,
+              searchFilter.limit || 50
+            );
+
+            // Send search results
+            for (const result of searchResults) {
+              this.sendEvent(session.webSocket, subscriptionId, result.event);
+            }
+
+            // Send EOSE
+            this.sendEOSE(session.webSocket, subscriptionId);
+            return;
+          }
+
+          // Default: unified search across all entity types
+          // When no type is specified or type='all'
+          if (!parsed.type || parsed.type === 'all') {
+            const searchResults = await searchUnified(
               this.env.RELAY_DATABASE,
               parsed,
               searchFilter.limit || 50
