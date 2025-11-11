@@ -14,7 +14,7 @@ import { validateSortField, validateIntColumn, getSortableFields, getIntFilterab
 import { shouldUseVideosTable, executeVideoQuery, fetchEventsForVideoRows } from './video-queries';
 import type { VideoFilter, IntComparison } from './video-queries';
 import { metricsCollector } from './query-metrics';
-import { searchUsers, searchHashtags } from './search';
+import { searchUsers, searchHashtags, searchVideos } from './search';
 import { parseSearchQuery } from './search-parser';
 
 // Session attachment data structure
@@ -821,6 +821,24 @@ export class RelayWebSocket implements DurableObject {
           // User search: type:user or kind 0
           if (parsed.type === 'user' || searchFilter.kinds?.includes(0)) {
             const searchResults = await searchUsers(
+              this.env.RELAY_DATABASE,
+              parsed,
+              searchFilter.limit || 50
+            );
+
+            // Send search results
+            for (const result of searchResults) {
+              this.sendEvent(session.webSocket, subscriptionId, result.event);
+            }
+
+            // Send EOSE
+            this.sendEOSE(session.webSocket, subscriptionId);
+            return;
+          }
+
+          // Video search: type:video or kind 34236
+          if (parsed.type === 'video' || searchFilter.kinds?.includes(34236)) {
+            const searchResults = await searchVideos(
               this.env.RELAY_DATABASE,
               parsed,
               searchFilter.limit || 50

@@ -201,3 +201,91 @@ export async function indexHashtags(
     console.error('Error indexing hashtags:', error);
   }
 }
+
+/**
+ * Search for videos (kind 34236 events) in the FTS5 index
+ * Searches across title, description, summary, and content fields
+ * Boosts relevance by engagement metrics (loop_count, likes)
+ * Returns results ordered by relevance score with engagement boost
+ */
+export async function searchVideos(
+  db: D1Database,
+  query: ParsedSearchQuery,
+  limit: number
+): Promise<SearchResult[]> {
+  const ftsQuery = buildFTSQuery(query.terms);
+
+  if (!ftsQuery) {
+    return [];
+  }
+
+  try {
+    const session = db.withSession('first-unconstrained');
+
+    // Search video metadata with engagement boost
+    const results = await session.prepare(`
+      SELECT
+        e.*,
+        v.loop_count,
+        v.likes,
+        vf.rank as base_relevance,
+        vf.rank * (1 + LOG(COALESCE(v.loop_count, 0) + 1) * 0.1) *
+                  (1 + LOG(COALESCE(v.likes, 0) + 1) * 0.05) as relevance_score,
+        snippet(videos_fts, 1, '<mark>', '</mark>', '...', 64) as snippet
+      FROM videos_fts vf
+      JOIN events e ON e.id = vf.event_id
+      LEFT JOIN videos v ON v.event_id = vf.event_id
+      WHERE videos_fts MATCH ?
+      ORDER BY relevance_score DESC, e.created_at DESC
+      LIMIT ?
+    `).bind(ftsQuery, limit).all();
+
+    return results.results.map(r => ({
+      type: 'video' as const,
+      event: {
+        id: r.id,
+        pubkey: r.pubkey,
+        created_at: r.created_at,
+        kind: r.kind,
+        tags: JSON.parse(r.tags),
+        content: r.content,
+        sig: r.sig
+      },
+      relevance_score: Math.abs(r.relevance_score || 0),
+      snippet: r.snippet,
+      match_fields: ['title', 'description', 'content']
+    }));
+  } catch (error) {
+    console.error('Video search error:', error);
+    return [];
+  }
+}
+
+/**
+ * Index a video event (kind 34236) into the FTS5 videos_fts table
+ * Extracts title and summary from event tags, content from event.content
+ * Note: FTS5 doesn't support UPSERT, so we delete then insert
+ */
+export async function indexVideo(
+  db: D1Database,
+  event: NostrEvent
+): Promise<void> {
+  try {
+    const title = event.tags.find(t => t[0] === 'title')?.[1] || '';
+    const summary = event.tags.find(t => t[0] === 'summary')?.[1] || '';
+    const session = db.withSession('first-primary');
+
+    // Delete existing entry for this event (if any)
+    await session.prepare(`
+      DELETE FROM videos_fts WHERE event_id = ?
+    `).bind(event.id).run();
+
+    // Insert new entry
+    await session.prepare(`
+      INSERT INTO videos_fts(event_id, title, description, summary, content)
+      VALUES (?, ?, ?, ?, ?)
+    `).bind(event.id, title, event.content, summary, event.content).run();
+  } catch (error) {
+    console.error('Error indexing video:', error);
+  }
+}
