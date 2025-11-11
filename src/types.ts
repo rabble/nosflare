@@ -9,6 +9,42 @@ export interface NostrEvent {
   sig: string;
 }
 
+// Search-related types
+export type SearchEntityType = 'user' | 'video' | 'list' | 'hashtag' | 'note' | 'article' | 'community' | 'all';
+
+export interface SearchOptions {
+  query: string;
+  types?: SearchEntityType[];
+  kinds?: number[];
+  limit?: number;
+  offset?: number;
+  minRelevance?: number;
+}
+
+export interface SearchResult {
+  type: SearchEntityType;
+  event: NostrEvent;
+  relevance_score: number;
+  snippet?: string;
+  match_fields?: string[];
+}
+
+export interface ParsedSearchQuery {
+  raw: string;
+  terms: string[];
+  type?: SearchEntityType;
+  filters: {
+    author?: string;
+    kind?: number;
+    hashtags?: string[];
+    since?: number;
+    until?: number;
+    min_likes?: number;
+    min_loops?: number;
+  };
+}
+
+// Extend NostrFilter to include search
 export interface NostrFilter {
   ids?: string[];
   authors?: string[];
@@ -16,6 +52,8 @@ export interface NostrFilter {
   since?: number;
   until?: number;
   limit?: number;
+  search?: string;  // NIP-50
+  search_types?: SearchEntityType[];  // Extension
   [key: string]: any;
 }
 
