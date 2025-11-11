@@ -172,6 +172,14 @@ export interface RelayInfo {
     subscription?: Array<{ amount: number; unit: string; period: number }>;
     publication?: Array<{ kinds: number[]; amount: number; unit: string }>;
   };
+  search?: {
+    enabled: boolean;
+    entity_types: string[];
+    extensions: string[];
+    max_results: number;
+    ranking_algorithm: string;
+    features: string[];
+  };
 }
 
 export interface Subscription {

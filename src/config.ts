@@ -1,4 +1,4 @@
-import { RelayInfo } from './types';
+import { RelayInfo, Env } from './types';
 
 // ***************************** //
 // ** BEGIN EDITABLE SETTINGS ** //
@@ -11,71 +11,97 @@ export const relayNpub = "npub16jdfqgazrkapk0yrqm9rdxlnys7ck39c7zmdzxtxqlmmpxg04
 export const PAY_TO_RELAY_ENABLED = false; // Set to false to disable pay to relay
 export const RELAY_ACCESS_PRICE_SATS = 2121; // Price in SATS for relay access
 
-// Relay info
+// Function to get environment-specific relay info
+export function getRelayInfo(env: Env): RelayInfo {
+  const isStaging = env.ENVIRONMENT === 'staging';
+
+  return {
+    name: isStaging ? "Divine Video Relay (STAGING)" : "Divine Video Relay",
+    description: isStaging
+      ? "🚧 STAGING - Testing environment for Divine Video's 6-second short-form videos with ProofMode verification"
+      : "A specialized Nostr relay for Divine Video's 6-second short-form videos with ProofMode verification ensuring authentic, human-created content",
+    pubkey: "d49a9023a21dba1b3c8306ca369bf3243d8b44b8f0b6d1196607f7b0990fa8df",
+    contact: isStaging ? "staging@divine.video" : "relay@divine.video",
+    supported_nips: [1, 2, 4, 5, 9, 11, 12, 15, 16, 17, 20, 22, 33, 40, 50],
+    software: "https://github.com/Spl0itable/nosflare",
+    version: "7.4.11",
+    icon: "https://divine.video/logo.png",
+
+    // Relay limitations
+    limitation: {
+      payment_required: PAY_TO_RELAY_ENABLED,
+      restricted_writes: PAY_TO_RELAY_ENABLED,
+    },
+
+    // NIP-50 search capabilities
+    search: {
+      enabled: true,
+      entity_types: ['user', 'video', 'list', 'hashtag', 'note', 'article', 'community', 'all'],
+      extensions: ['type:', 'author:', 'kind:', 'hashtag:', 'min_likes:', 'min_loops:', 'since:', 'until:'],
+      max_results: 200,
+      ranking_algorithm: 'bm25',
+      features: ['prefix_matching', 'autocomplete', 'snippet_generation', 'relevance_scoring']
+    },
+
+    // Vendor extensions (Phase 1: Video discovery with custom filters)
+    divine_extensions: {
+      int_filters: ["loop_count", "likes", "views", "comments", "avg_completion", "has_proofmode", "has_device_attestation", "has_pgp_signature"],
+      sort_fields: ["loop_count", "likes", "views", "comments", "avg_completion", "created_at"],
+      cursor_format: "base64url-encoded HMAC-SHA256 with query hash binding",
+      videos_kind: 34236,
+      metrics_freshness_sec: 3600, // Metrics updated hourly via analytics pipeline
+      limit_max: 200, // Hard cap for sorted queries
+      proofmode: {
+        enabled: true,
+        verification_filter: "verification",  // Filter by verification level (e.g., verification: ['verified_mobile', 'verified_web'])
+        verification_levels: ["verified_mobile", "verified_web", "basic_proof", "unverified"],
+        tags: ["verification", "proofmode", "device_attestation", "pgp_fingerprint"],
+        info_url: "https://divine.video/proofmode"
+      }
+    }
+  };
+}
+
+// Legacy export for backward compatibility (production defaults)
+// Use getRelayInfo(env) in worker code instead
 export const relayInfo: RelayInfo = {
   name: "Divine Video Relay",
   description: "A specialized Nostr relay for Divine Video's 6-second short-form videos with ProofMode verification ensuring authentic, human-created content",
   pubkey: "d49a9023a21dba1b3c8306ca369bf3243d8b44b8f0b6d1196607f7b0990fa8df",
   contact: "relay@divine.video",
-  supported_nips: [1, 2, 4, 5, 9, 11, 12, 15, 16, 17, 20, 22, 33, 40],
+  supported_nips: [1, 2, 4, 5, 9, 11, 12, 15, 16, 17, 20, 22, 33, 40, 50],
   software: "https://github.com/Spl0itable/nosflare",
   version: "7.4.11",
   icon: "https://divine.video/logo.png",
 
-  // Optional fields (uncomment as needed):
-  // banner: "https://example.com/banner.jpg",
-  // privacy_policy: "https://example.com/privacy-policy.html",
-  // terms_of_service: "https://example.com/terms.html",
-
-  // Relay limitations
   limitation: {
-    // max_message_length: 524288, // 512KB
-    // max_subscriptions: 300,
-    // max_limit: 10000,
-    // max_subid_length: 256,
-    // max_event_tags: 2000,
-    // max_content_length: 70000,
-    // min_pow_difficulty: 0,
-    // auth_required: false,
     payment_required: PAY_TO_RELAY_ENABLED,
     restricted_writes: PAY_TO_RELAY_ENABLED,
-    // created_at_lower_limit: 0,
-    // created_at_upper_limit: 2147483647,
-    // default_limit: 10000
   },
 
-  // Event retention policies (uncomment and configure as needed):
-  // retention: [
-  //   { kinds: [0, 1, [5, 7], [40, 49]], time: 3600 },
-  //   { kinds: [[40000, 49999]], time: 100 },
-  //   { kinds: [[30000, 39999]], count: 1000 },
-  //   { time: 3600, count: 10000 }
-  // ],
+  search: {
+    enabled: true,
+    entity_types: ['user', 'video', 'list', 'hashtag', 'note', 'article', 'community', 'all'],
+    extensions: ['type:', 'author:', 'kind:', 'hashtag:', 'min_likes:', 'min_loops:', 'since:', 'until:'],
+    max_results: 200,
+    ranking_algorithm: 'bm25',
+    features: ['prefix_matching', 'autocomplete', 'snippet_generation', 'relevance_scoring']
+  },
 
-  // Content limitations by country (uncomment as needed):
-  // relay_countries: ["*"], // Use ["US", "CA", "EU"] for specific countries, ["*"] for global
-
-  // Community preferences (uncomment as needed):
-  // language_tags: ["en", "en-419"], // IETF language tags, use ["*"] for all languages
-  // tags: ["sfw-only", "bitcoin-only", "anime"], // Community/content tags
-  // posting_policy: "https://example.com/posting-policy.html",
-
-  // Payment configuration (added dynamically in handleRelayInfoRequest if PAY_TO_RELAY_ENABLED):
-  // payments_url: "https://my-relay/payments",
-  // fees: {
-  //   admission: [{ amount: 1000000, unit: "msats" }],
-  //   subscription: [{ amount: 5000000, unit: "msats", period: 2592000 }],
-  //   publication: [{ kinds: [4], amount: 100, unit: "msats" }],
-  // }
-
-  // Vendor extensions (Phase 1: Video discovery with custom filters)
   divine_extensions: {
-    int_filters: ["loop_count", "likes", "views", "comments", "avg_completion"],
+    int_filters: ["loop_count", "likes", "views", "comments", "avg_completion", "has_proofmode", "has_device_attestation", "has_pgp_signature"],
     sort_fields: ["loop_count", "likes", "views", "comments", "avg_completion", "created_at"],
     cursor_format: "base64url-encoded HMAC-SHA256 with query hash binding",
     videos_kind: 34236,
-    metrics_freshness_sec: 3600, // Metrics updated hourly via analytics pipeline
-    limit_max: 200 // Hard cap for sorted queries
+    metrics_freshness_sec: 3600,
+    limit_max: 200,
+    proofmode: {
+      enabled: true,
+      verification_filter: "verification",
+      verification_levels: ["verified_mobile", "verified_web", "basic_proof", "unverified"],
+      tags: ["verification", "proofmode", "device_attestation", "pgp_fingerprint"],
+      info_url: "https://divine.video/proofmode"
+    }
   }
 };
 
@@ -97,13 +123,13 @@ export const antiSpamKinds = new Set([
 
 // Blocked pubkeys
 // Add pubkeys in hex format to block write access
-export const blockedPubkeys = new Set([
-  "3c7f5948b5d80900046a67d8e3bf4971d6cba013abece1dd542eca223cf3dd3f",
-  "fed5c0c3c8fe8f51629a0b39951acdf040fd40f53a327ae79ee69991176ba058",
-  "e810fafa1e89cdf80cced8e013938e87e21b699b24c8570537be92aec4b12c18",
-  "05aee96dd41429a3ae97a9dac4dfc6867fdfacebca3f3bdc051e5004b0751f01",
-  "53a756bb596055219d93e888f71d936ec6c47d960320476c955efd8941af4362"
-]);
+export const blockedPubkeys = new Set<string>([]);
+
+
+
+
+
+
 
 // Allowed pubkeys
 // Add pubkeys in hex format to allow write access
