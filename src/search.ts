@@ -449,3 +449,85 @@ export async function indexList(
     console.error('Error indexing list:', error);
   }
 }
+
+/**
+ * Search for articles (kind 30023 events) in the FTS5 index
+ * Searches across title, summary, and content fields
+ * Returns results ordered by relevance score
+ */
+export async function searchArticles(
+  db: D1Database,
+  query: ParsedSearchQuery,
+  limit: number
+): Promise<SearchResult[]> {
+  const ftsQuery = buildFTSQuery(query.terms);
+
+  if (!ftsQuery) {
+    return [];
+  }
+
+  try {
+    const session = db.withSession('first-unconstrained');
+
+    const results = await session.prepare(`
+      SELECT
+        e.*,
+        a.rank as relevance_score,
+        snippet(articles_fts, 2, '<mark>', '</mark>', '...', 64) as snippet
+      FROM articles_fts a
+      JOIN events e ON e.id = a.event_id
+      WHERE articles_fts MATCH ?
+      ORDER BY a.rank DESC, e.created_at DESC
+      LIMIT ?
+    `).bind(ftsQuery, limit).all();
+
+    return results.results.map(r => ({
+      type: 'article' as const,
+      event: {
+        id: r.id,
+        pubkey: r.pubkey,
+        created_at: r.created_at,
+        kind: r.kind,
+        tags: JSON.parse(r.tags),
+        content: r.content,
+        sig: r.sig
+      },
+      relevance_score: Math.abs(r.relevance_score || 0),
+      snippet: r.snippet,
+      match_fields: ['title', 'summary', 'content']
+    }));
+  } catch (error) {
+    console.error('Article search error:', error);
+    return [];
+  }
+}
+
+/**
+ * Index an article event (kind 30023) into the FTS5 articles_fts table
+ * Extracts d_tag, title, and summary from event tags
+ * Note: FTS5 doesn't support UPSERT, so we delete then insert
+ */
+export async function indexArticle(
+  db: D1Database,
+  event: NostrEvent
+): Promise<void> {
+  try {
+    const dTag = event.tags.find(t => t[0] === 'd')?.[1] || '';
+    const title = event.tags.find(t => t[0] === 'title')?.[1] || '';
+    const summary = event.tags.find(t => t[0] === 'summary')?.[1] || '';
+    const session = db.withSession('first-primary');
+
+    // Delete existing entry for this event (if any)
+    await session.prepare(`
+      DELETE FROM articles_fts WHERE event_id = ?
+    `).bind(event.id).run();
+
+    // Insert new entry
+    await session.prepare(`
+      INSERT INTO articles_fts(event_id, d_tag, title, summary, content)
+      VALUES (?, ?, ?, ?, ?)
+    `).bind(event.id, dTag, title, summary, event.content).run();
+  } catch (error) {
+    console.error('Error indexing article:', error);
+  }
+}
