@@ -3,7 +3,7 @@ import { Env, NostrEvent, NostrFilter, QueryResult, NostrMessage, Nip05Response 
 import * as config from './config';
 import { RelayWebSocket } from './durable-object';
 import { runMigrations } from './migrations';
-import { indexUserProfile } from './search';
+import { indexUserProfile, indexHashtags } from './search';
 
 // Import config values
 const {
@@ -795,6 +795,9 @@ async function saveEventToD1(event: NostrEvent, env: Env): Promise<{ success: bo
     if (event.kind === 0) {
       await indexUserProfile(env.RELAY_DATABASE, event);
     }
+
+    // Index hashtags for search (all event kinds with #t tags)
+    await indexHashtags(env.RELAY_DATABASE, event);
 
     console.log(`Event ${event.id} saved successfully to D1.`);
     return { success: true, message: "Event received successfully for processing" };

@@ -14,7 +14,7 @@ import { validateSortField, validateIntColumn, getSortableFields, getIntFilterab
 import { shouldUseVideosTable, executeVideoQuery, fetchEventsForVideoRows } from './video-queries';
 import type { VideoFilter, IntComparison } from './video-queries';
 import { metricsCollector } from './query-metrics';
-import { searchUsers } from './search';
+import { searchUsers, searchHashtags } from './search';
 import { parseSearchQuery } from './search-parser';
 
 // Session attachment data structure
@@ -799,6 +799,24 @@ export class RelayWebSocket implements DurableObject {
         if (searchFilter && searchFilter.search) {
           // Handle search query
           const parsed = parseSearchQuery(searchFilter.search);
+
+          // Hashtag search: hashtag:#prefix
+          if (parsed.raw.includes('hashtag:')) {
+            const searchResults = await searchHashtags(
+              this.env.RELAY_DATABASE,
+              parsed,
+              searchFilter.limit || 50
+            );
+
+            // Send search results
+            for (const result of searchResults) {
+              this.sendEvent(session.webSocket, subscriptionId, result.event);
+            }
+
+            // Send EOSE
+            this.sendEOSE(session.webSocket, subscriptionId);
+            return;
+          }
 
           // User search: type:user or kind 0
           if (parsed.type === 'user' || searchFilter.kinds?.includes(0)) {
