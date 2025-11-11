@@ -1,4 +1,4 @@
-const { parseSearchQuery } = require('./dist/search-parser.cjs');
+const { parseSearchQuery, buildFTSQuery } = require('./dist/search-parser.cjs');
 
 function assertEquals(actual, expected, message) {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
@@ -40,4 +40,34 @@ assertEquals(result5.filters.author, 'rabble', 'Complex: author');
 assertEquals(result5.filters.min_likes, 100, 'Complex: min_likes');
 assertEquals(result5.terms, ['italian', 'food'], 'Complex: remaining terms');
 
-console.log('\n✓ All parser tests passed!');
+// Test 6: Empty query string edge case
+const result6 = parseSearchQuery('');
+assertEquals(result6.terms, [], 'Empty query returns empty terms');
+assertEquals(result6.filters, {}, 'Empty query returns empty filters');
+
+// Test 7: Empty hashtag edge case
+const result7 = parseSearchQuery('# test');
+assertEquals(result7.terms, ['test'], 'Empty hashtag ignored');
+
+console.log('\n✓ All parseSearchQuery tests passed!');
+
+// buildFTSQuery tests
+console.log('\nTesting buildFTSQuery...');
+
+// Test 1: Empty array returns empty string
+const fts1 = buildFTSQuery([]);
+assertEquals(fts1, '', 'Empty array returns empty string');
+
+// Test 2: Single term returns "term*"
+const fts2 = buildFTSQuery(['bitcoin']);
+assertEquals(fts2, 'bitcoin*', 'Single term with prefix match');
+
+// Test 3: Multiple terms returns "term1* OR term2* OR term3*"
+const fts3 = buildFTSQuery(['bitcoin', 'nostr', 'lightning']);
+assertEquals(fts3, 'bitcoin* OR nostr* OR lightning*', 'Multiple terms with OR operator');
+
+// Test 4: Two terms
+const fts4 = buildFTSQuery(['dance', 'music']);
+assertEquals(fts4, 'dance* OR music*', 'Two terms with OR operator');
+
+console.log('\n✓ All buildFTSQuery tests passed!');

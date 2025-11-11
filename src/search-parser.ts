@@ -40,8 +40,11 @@ export function parseSearchQuery(query: string): ParsedSearchQuery {
         parsed.filters.kinds = [kind];
       }
     } else if (token.startsWith('#')) {
-      if (!parsed.filters.hashtags) parsed.filters.hashtags = [];
-      parsed.filters.hashtags.push(token.substring(1));
+      const tag = token.substring(1);
+      if (tag.length > 0) {
+        if (!parsed.filters.hashtags) parsed.filters.hashtags = [];
+        parsed.filters.hashtags.push(tag);
+      }
     } else if (token.startsWith('min_likes:')) {
       const val = parseInt(token.substring(10));
       if (!isNaN(val)) {
