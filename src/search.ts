@@ -289,3 +289,81 @@ export async function indexVideo(
     console.error('Error indexing video:', error);
   }
 }
+
+/**
+ * Search for notes (kind 1 events) in the FTS5 index
+ * Searches across note content
+ * Returns results ordered by relevance score
+ */
+export async function searchNotes(
+  db: D1Database,
+  query: ParsedSearchQuery,
+  limit: number
+): Promise<SearchResult[]> {
+  const ftsQuery = buildFTSQuery(query.terms);
+
+  if (!ftsQuery) {
+    return [];
+  }
+
+  try {
+    const session = db.withSession('first-unconstrained');
+
+    const results = await session.prepare(`
+      SELECT
+        e.*,
+        n.rank as relevance_score,
+        snippet(notes_fts, 0, '<mark>', '</mark>', '...', 64) as snippet
+      FROM notes_fts n
+      JOIN events e ON e.id = n.event_id
+      WHERE notes_fts MATCH ?
+      ORDER BY n.rank DESC, e.created_at DESC
+      LIMIT ?
+    `).bind(ftsQuery, limit).all();
+
+    return results.results.map(r => ({
+      type: 'note' as const,
+      event: {
+        id: r.id,
+        pubkey: r.pubkey,
+        created_at: r.created_at,
+        kind: r.kind,
+        tags: JSON.parse(r.tags),
+        content: r.content,
+        sig: r.sig
+      },
+      relevance_score: Math.abs(r.relevance_score || 0),
+      snippet: r.snippet,
+      match_fields: ['content']
+    }));
+  } catch (error) {
+    console.error('Note search error:', error);
+    return [];
+  }
+}
+
+/**
+ * Index a note event (kind 1) into the FTS5 notes_fts table
+ * Note: FTS5 doesn't support UPSERT, so we delete then insert
+ */
+export async function indexNote(
+  db: D1Database,
+  event: NostrEvent
+): Promise<void> {
+  try {
+    const session = db.withSession('first-primary');
+
+    // Delete existing entry for this event (if any)
+    await session.prepare(`
+      DELETE FROM notes_fts WHERE event_id = ?
+    `).bind(event.id).run();
+
+    // Insert new entry
+    await session.prepare(`
+      INSERT INTO notes_fts(event_id, content)
+      VALUES (?, ?)
+    `).bind(event.id, event.content).run();
+  } catch (error) {
+    console.error('Error indexing note:', error);
+  }
+}
