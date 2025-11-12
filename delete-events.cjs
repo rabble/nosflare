@@ -1,0 +1,57 @@
+// Admin script to safely delete events and all related data
+// Handles foreign key relationships correctly
+
+const eventIds = [
+  '60b2da29e774032942c790712391402fe852c9eb2472172f4428533f6b657f35',
+  '15a81327e515c146bd3feff270c18f6e4b900e675dd62fdf88e8fe532a081e41',
+  '055d96d102fa5ad6a50ff0b0a6d33e115cd426212938c29257546fcd7cc00279',
+  '0e51730ae3917be15bbbd2e26dc31c3f317c0a6f1cc0349c25914add00659f76',
+  '93857db4201551ab00f5c9ecb5852799a39d887dd3d4d271723f68c47621ba15',
+  '500ab0f3465284f967a8344850f16c838f96f5ef6db0ccb9f8ea4cfcf4b8d083',
+  'b0caa66df10f360ef88d7204f82623bc671e502ed25e3d8a93309226b8f7182c',
+  '831d9ae64257a74b865743194e0d65ad9c3a28c1e50c9bf8cad259281f048464',
+  'b4a9474d3cc5d7f4abe85d5a2029929a6656f8fe1d266d9429b9904960c1c366'
+];
+
+const DATABASE_ID = '8beb11fa-ff53-462e-82a4-64a8a7db68a2';
+
+console.log('═══════════════════════════════════════════════════════');
+console.log('  EVENT DELETION SCRIPT');
+console.log('═══════════════════════════════════════════════════════\n');
+console.log(`Deleting ${eventIds.length} events...\n`);
+
+// Generate SQL for safe deletion
+function generateDeleteSQL(eventIds) {
+  const idList = eventIds.map(id => `'${id}'`).join(', ');
+
+  return `
+-- Step 1: Delete from video-related tables (no foreign keys)
+DELETE FROM video_hashtags WHERE event_id IN (${idList});
+DELETE FROM video_mentions WHERE event_id IN (${idList});
+DELETE FROM video_references WHERE event_id IN (${idList});
+DELETE FROM video_addresses WHERE event_id IN (${idList});
+DELETE FROM videos WHERE event_id IN (${idList});
+
+-- Step 2: Delete from event_tags_cache
+DELETE FROM event_tags_cache WHERE event_id IN (${idList});
+
+-- Step 3: Delete from events table (CASCADE handles tags and content_hashes)
+DELETE FROM events WHERE id IN (${idList});
+
+-- Verify deletion
+SELECT COUNT(*) as remaining_events FROM events WHERE id IN (${idList});
+  `.trim();
+}
+
+const sql = generateDeleteSQL(eventIds);
+
+console.log('Generated SQL:\n');
+console.log(sql);
+console.log('\n═══════════════════════════════════════════════════════\n');
+console.log('To execute this deletion, run:\n');
+console.log(`npx wrangler d1 execute nostr-relay --remote --command="${sql.replace(/"/g, '\\"')}"`);
+console.log('\n');
+console.log('Or save to a file and execute:');
+console.log('  echo "SQL_ABOVE" > delete.sql');
+console.log('  npx wrangler d1 execute nostr-relay --remote --file=delete.sql');
+console.log('\n═══════════════════════════════════════════════════════\n');

@@ -36,3 +36,37 @@ new_sqlite_classes = ["RelayWebSocket"]
 # Scheduled worker for archiving
 [triggers]
 crons = ["*/30 * * * *"]  # Run every 30 min
+
+# Production environment variables
+[vars]
+ENVIRONMENT = "production"
+RELAY_DOMAIN = "relay.divine.video"
+
+# ============================================
+# STAGING ENVIRONMENT
+# ============================================
+[env.staging]
+name = "nosflare-staging"
+
+# Staging D1 Database binding
+[[env.staging.d1_databases]]
+binding = "RELAY_DATABASE"
+database_name = "nostr-relay-staging"
+database_id = "c345a4fe-26ce-4056-a70b-0085bc3448e1"
+
+# Staging R2 bucket binding
+# TODO: Create bucket via dashboard
+# Command: Go to Cloudflare Dashboard → R2
+#          Click "Create bucket" → Name: nostr-event-archive-staging
+[[env.staging.r2_buckets]]
+binding = "EVENT_ARCHIVE"
+bucket_name = "nostr-event-archive-staging"
+
+# Staging environment variables
+[env.staging.vars]
+ENVIRONMENT = "staging"
+RELAY_DOMAIN = "staging-relay.divine.video"
+
+# Run archival less frequently in staging (every 2 hours)
+[env.staging.triggers]
+crons = ["0 */2 * * *"]

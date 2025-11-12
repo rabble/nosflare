@@ -6,7 +6,7 @@
 # Test vendor extensions are working
 node -e "
 const WebSocket = require('ws');
-const ws = new WebSocket('wss://nosflare.protestnet.workers.dev');
+const ws = new WebSocket('wss://relay.divine.video');
 
 ws.on('open', () => {
   ws.send(JSON.stringify(['REQ', 'test', {
@@ -34,7 +34,7 @@ setTimeout(() => process.exit(0), 3000);
 ## Check NIP-11 Vendor Extensions
 
 ```bash
-curl -H "Accept: application/nostr+json" https://nosflare.protestnet.workers.dev | jq '.divine_extensions'
+curl -H "Accept: application/nostr+json" https://relay.divine.video | jq '.divine_extensions'
 ```
 
 Expected response:

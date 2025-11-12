@@ -6,7 +6,13 @@
   "scripts": {
     "build": "esbuild src/index.ts --bundle --outfile=worker.js --platform=neutral --target=es2020 --format=esm --minify=false --keep-names --external:node:*",
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "dev:staging": "wrangler dev --env staging",
+    "deploy": "npm run build && wrangler deploy",
+    "deploy:staging": "npm run build && wrangler deploy --env staging",
+    "deploy:check": "wrangler deploy --dry-run",
+    "deploy:staging:check": "wrangler deploy --dry-run --env staging",
+    "tail": "wrangler tail nosflare",
+    "tail:staging": "wrangler tail nosflare-staging",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -16,6 +22,8 @@
     "@cloudflare/workers-types": "^4.20251014.0",
     "@types/node": "^24.9.1",
     "esbuild": "^0.19.0",
+    "marked": "^16.4.1",
+    "nostr-tools": "^2.17.1",
     "wrangler": "^3.0.0"
   }
 }

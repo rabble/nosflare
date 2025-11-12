@@ -34,7 +34,7 @@ wrangler secret put CURSOR_SECRET
 
 ### NIP-11 Vendor Extensions ✅
 ```bash
-curl -H "Accept: application/nostr+json" https://nosflare.protestnet.workers.dev
+curl -H "Accept: application/nostr+json" https://relay.divine.video
 ```
 
 ```json
@@ -53,7 +53,7 @@ curl -H "Accept: application/nostr+json" https://nosflare.protestnet.workers.dev
 ## 4. Monitor Metrics ✅
 
 ### Deployment Status:
-- Main worker: https://nosflare.protestnet.workers.dev
+- Main worker: https://relay.divine.video
 - Backfill worker: https://backfill-videos.protestnet.workers.dev
 
 ### Database Status:

@@ -54,6 +54,7 @@ __export(config_exports, {
   enableAntiSpam: () => enableAntiSpam,
   enableGlobalDuplicateCheck: () => enableGlobalDuplicateCheck,
   excludedRateLimitKinds: () => excludedRateLimitKinds,
+  getRelayInfo: () => getRelayInfo,
   isEventKindAllowed: () => isEventKindAllowed,
   isPubkeyAllowed: () => isPubkeyAllowed,
   isTagAllowed: () => isTagAllowed,
@@ -64,65 +65,88 @@ __export(config_exports, {
 var relayNpub = "npub16jdfqgazrkapk0yrqm9rdxlnys7ck39c7zmdzxtxqlmmpxg04r0sd733sv";
 var PAY_TO_RELAY_ENABLED = false;
 var RELAY_ACCESS_PRICE_SATS = 2121;
+function getRelayInfo(env) {
+  const isStaging = env.ENVIRONMENT === "staging";
+  return {
+    name: isStaging ? "Divine Video Relay (STAGING)" : "Divine Video Relay",
+    description: isStaging ? "\u{1F6A7} STAGING - Testing environment for Divine Video's 6-second short-form videos with ProofMode verification" : "A specialized Nostr relay for Divine Video's 6-second short-form videos with ProofMode verification ensuring authentic, human-created content",
+    pubkey: "d49a9023a21dba1b3c8306ca369bf3243d8b44b8f0b6d1196607f7b0990fa8df",
+    contact: isStaging ? "staging@divine.video" : "relay@divine.video",
+    supported_nips: [1, 2, 4, 5, 9, 11, 12, 15, 16, 17, 20, 22, 33, 40, 50],
+    software: "https://github.com/Spl0itable/nosflare",
+    version: "7.4.11",
+    icon: "https://divine.video/logo.png",
+    // Relay limitations
+    limitation: {
+      payment_required: PAY_TO_RELAY_ENABLED,
+      restricted_writes: PAY_TO_RELAY_ENABLED
+    },
+    // NIP-50 search capabilities
+    search: {
+      enabled: true,
+      entity_types: ["user", "video", "list", "hashtag", "note", "article", "community", "all"],
+      extensions: ["type:", "author:", "kind:", "hashtag:", "min_likes:", "min_loops:", "since:", "until:"],
+      max_results: 200,
+      ranking_algorithm: "bm25",
+      features: ["prefix_matching", "autocomplete", "snippet_generation", "relevance_scoring"]
+    },
+    // Vendor extensions (Phase 1: Video discovery with custom filters)
+    divine_extensions: {
+      int_filters: ["loop_count", "likes", "views", "comments", "avg_completion", "has_proofmode", "has_device_attestation", "has_pgp_signature"],
+      sort_fields: ["loop_count", "likes", "views", "comments", "avg_completion", "created_at"],
+      cursor_format: "base64url-encoded HMAC-SHA256 with query hash binding",
+      videos_kind: 34236,
+      metrics_freshness_sec: 3600,
+      // Metrics updated hourly via analytics pipeline
+      limit_max: 200,
+      // Hard cap for sorted queries
+      proofmode: {
+        enabled: true,
+        verification_filter: "verification",
+        // Filter by verification level (e.g., verification: ['verified_mobile', 'verified_web'])
+        verification_levels: ["verified_mobile", "verified_web", "basic_proof", "unverified"],
+        tags: ["verification", "proofmode", "device_attestation", "pgp_fingerprint"],
+        info_url: "https://divine.video/proofmode"
+      }
+    }
+  };
+}
+__name(getRelayInfo, "getRelayInfo");
 var relayInfo = {
   name: "Divine Video Relay",
   description: "A specialized Nostr relay for Divine Video's 6-second short-form videos with ProofMode verification ensuring authentic, human-created content",
   pubkey: "d49a9023a21dba1b3c8306ca369bf3243d8b44b8f0b6d1196607f7b0990fa8df",
   contact: "relay@divine.video",
-  supported_nips: [1, 2, 4, 5, 9, 11, 12, 15, 16, 17, 20, 22, 33, 40],
+  supported_nips: [1, 2, 4, 5, 9, 11, 12, 15, 16, 17, 20, 22, 33, 40, 50],
   software: "https://github.com/Spl0itable/nosflare",
   version: "7.4.11",
   icon: "https://divine.video/logo.png",
-  // Optional fields (uncomment as needed):
-  // banner: "https://example.com/banner.jpg",
-  // privacy_policy: "https://example.com/privacy-policy.html",
-  // terms_of_service: "https://example.com/terms.html",
-  // Relay limitations
   limitation: {
-    // max_message_length: 524288, // 512KB
-    // max_subscriptions: 300,
-    // max_limit: 10000,
-    // max_subid_length: 256,
-    // max_event_tags: 2000,
-    // max_content_length: 70000,
-    // min_pow_difficulty: 0,
-    // auth_required: false,
     payment_required: PAY_TO_RELAY_ENABLED,
     restricted_writes: PAY_TO_RELAY_ENABLED
-    // created_at_lower_limit: 0,
-    // created_at_upper_limit: 2147483647,
-    // default_limit: 10000
   },
-  // Event retention policies (uncomment and configure as needed):
-  // retention: [
-  //   { kinds: [0, 1, [5, 7], [40, 49]], time: 3600 },
-  //   { kinds: [[40000, 49999]], time: 100 },
-  //   { kinds: [[30000, 39999]], count: 1000 },
-  //   { time: 3600, count: 10000 }
-  // ],
-  // Content limitations by country (uncomment as needed):
-  // relay_countries: ["*"], // Use ["US", "CA", "EU"] for specific countries, ["*"] for global
-  // Community preferences (uncomment as needed):
-  // language_tags: ["en", "en-419"], // IETF language tags, use ["*"] for all languages
-  // tags: ["sfw-only", "bitcoin-only", "anime"], // Community/content tags
-  // posting_policy: "https://example.com/posting-policy.html",
-  // Payment configuration (added dynamically in handleRelayInfoRequest if PAY_TO_RELAY_ENABLED):
-  // payments_url: "https://my-relay/payments",
-  // fees: {
-  //   admission: [{ amount: 1000000, unit: "msats" }],
-  //   subscription: [{ amount: 5000000, unit: "msats", period: 2592000 }],
-  //   publication: [{ kinds: [4], amount: 100, unit: "msats" }],
-  // }
-  // Vendor extensions (Phase 1: Video discovery with custom filters)
+  search: {
+    enabled: true,
+    entity_types: ["user", "video", "list", "hashtag", "note", "article", "community", "all"],
+    extensions: ["type:", "author:", "kind:", "hashtag:", "min_likes:", "min_loops:", "since:", "until:"],
+    max_results: 200,
+    ranking_algorithm: "bm25",
+    features: ["prefix_matching", "autocomplete", "snippet_generation", "relevance_scoring"]
+  },
   divine_extensions: {
-    int_filters: ["loop_count", "likes", "views", "comments", "avg_completion"],
+    int_filters: ["loop_count", "likes", "views", "comments", "avg_completion", "has_proofmode", "has_device_attestation", "has_pgp_signature"],
     sort_fields: ["loop_count", "likes", "views", "comments", "avg_completion", "created_at"],
     cursor_format: "base64url-encoded HMAC-SHA256 with query hash binding",
     videos_kind: 34236,
     metrics_freshness_sec: 3600,
-    // Metrics updated hourly via analytics pipeline
-    limit_max: 200
-    // Hard cap for sorted queries
+    limit_max: 200,
+    proofmode: {
+      enabled: true,
+      verification_filter: "verification",
+      verification_levels: ["verified_mobile", "verified_web", "basic_proof", "unverified"],
+      tags: ["verification", "proofmode", "device_attestation", "pgp_fingerprint"],
+      info_url: "https://divine.video/proofmode"
+    }
   }
 };
 var nip05Users = {
@@ -262,13 +286,7 @@ var antiSpamKinds = /* @__PURE__ */ new Set([
   39009
   // Add other kinds you want to check for duplicates
 ]);
-var blockedPubkeys = /* @__PURE__ */ new Set([
-  "3c7f5948b5d80900046a67d8e3bf4971d6cba013abece1dd542eca223cf3dd3f",
-  "fed5c0c3c8fe8f51629a0b39951acdf040fd40f53a327ae79ee69991176ba058",
-  "e810fafa1e89cdf80cced8e013938e87e21b699b24c8570537be92aec4b12c18",
-  "05aee96dd41429a3ae97a9dac4dfc6867fdfacebca3f3bdc051e5004b0751f01",
-  "53a756bb596055219d93e888f71d936ec6c47d960320476c955efd8941af4362"
-]);
+var blockedPubkeys = /* @__PURE__ */ new Set([]);
 var allowedPubkeys = /* @__PURE__ */ new Set([
   // ... pubkeys that are explicitly allowed
 ]);
@@ -2956,27 +2974,238 @@ var MIGRATIONS = [
       console.log(`Created ${timeWindowIndexes.length} time-window sort indexes`);
       console.log("Migration 2: Videos table and indexes created successfully");
     }
+  },
+  {
+    version: 3,
+    description: "Add video_hashtags junction table for multi-hashtag support",
+    up: async (db) => {
+      await db.prepare(`
+        CREATE TABLE IF NOT EXISTS video_hashtags (
+          event_id TEXT NOT NULL,
+          hashtag TEXT NOT NULL,
+          PRIMARY KEY (event_id, hashtag)
+        )
+      `).run();
+      console.log("Created video_hashtags table");
+      await db.prepare(`
+        CREATE INDEX IF NOT EXISTS idx_vh_hashtag ON video_hashtags(hashtag, event_id)
+      `).run();
+      await db.prepare(`
+        CREATE INDEX IF NOT EXISTS idx_vh_event ON video_hashtags(event_id)
+      `).run();
+      console.log("Created video_hashtags indexes");
+      await db.prepare(`
+        INSERT INTO video_hashtags (event_id, hashtag)
+        SELECT event_id, hashtag
+        FROM videos
+        WHERE hashtag IS NOT NULL
+      `).run();
+      console.log("Migrated existing hashtags to video_hashtags table");
+      console.log("Migration 3: video_hashtags junction table created successfully");
+    }
+  },
+  {
+    version: 4,
+    description: "Add author-scoped composite indexes for per-author video queries",
+    up: async (db) => {
+      const authorIndexes = [
+        "CREATE INDEX IF NOT EXISTS idx_videos_author_loops_created_id ON videos(author, loop_count DESC, created_at DESC, event_id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_videos_author_likes_created_id ON videos(author, likes DESC, created_at DESC, event_id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_videos_author_views_created_id ON videos(author, views DESC, created_at DESC, event_id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_videos_author_comments_created_id ON videos(author, comments DESC, created_at DESC, event_id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_videos_author_reposts_created_id ON videos(author, reposts DESC, created_at DESC, event_id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_videos_author_created_id ON videos(author, created_at DESC, event_id ASC)"
+      ];
+      for (const sql of authorIndexes) {
+        await db.prepare(sql).run();
+      }
+      console.log(`Created ${authorIndexes.length} author-scoped sort indexes`);
+      console.log("Migration 4: Author indexes created successfully");
+    }
+  },
+  {
+    version: 5,
+    description: "Add junction tables for mentions (#p), references (#e), and addresses (#a) tags",
+    up: async (db) => {
+      await db.prepare(`
+        CREATE TABLE IF NOT EXISTS video_mentions (
+          event_id TEXT NOT NULL,
+          pubkey TEXT NOT NULL,
+          PRIMARY KEY (event_id, pubkey)
+        )
+      `).run();
+      console.log("Created video_mentions table");
+      await db.prepare(`
+        CREATE INDEX IF NOT EXISTS idx_vm_pubkey ON video_mentions(pubkey, event_id)
+      `).run();
+      await db.prepare(`
+        CREATE INDEX IF NOT EXISTS idx_vm_event ON video_mentions(event_id)
+      `).run();
+      console.log("Created video_mentions indexes");
+      await db.prepare(`
+        CREATE TABLE IF NOT EXISTS video_references (
+          event_id TEXT NOT NULL,
+          referenced_event_id TEXT NOT NULL,
+          PRIMARY KEY (event_id, referenced_event_id)
+        )
+      `).run();
+      console.log("Created video_references table");
+      await db.prepare(`
+        CREATE INDEX IF NOT EXISTS idx_vr_ref_event ON video_references(referenced_event_id, event_id)
+      `).run();
+      await db.prepare(`
+        CREATE INDEX IF NOT EXISTS idx_vr_event ON video_references(event_id)
+      `).run();
+      console.log("Created video_references indexes");
+      await db.prepare(`
+        CREATE TABLE IF NOT EXISTS video_addresses (
+          event_id TEXT NOT NULL,
+          address TEXT NOT NULL,
+          PRIMARY KEY (event_id, address)
+        )
+      `).run();
+      console.log("Created video_addresses table");
+      await db.prepare(`
+        CREATE INDEX IF NOT EXISTS idx_va_address ON video_addresses(address, event_id)
+      `).run();
+      await db.prepare(`
+        CREATE INDEX IF NOT EXISTS idx_va_event ON video_addresses(event_id)
+      `).run();
+      console.log("Created video_addresses indexes");
+      console.log("Migration 5: Tag junction tables created successfully");
+    }
+  },
+  {
+    version: 6,
+    description: "Add ProofMode verification columns and indexes for video authenticity",
+    up: async (db) => {
+      await db.prepare(`
+        ALTER TABLE videos ADD COLUMN verification_level TEXT
+      `).run();
+      await db.prepare(`
+        ALTER TABLE videos ADD COLUMN has_proofmode INTEGER DEFAULT 0
+      `).run();
+      await db.prepare(`
+        ALTER TABLE videos ADD COLUMN has_device_attestation INTEGER DEFAULT 0
+      `).run();
+      await db.prepare(`
+        ALTER TABLE videos ADD COLUMN has_pgp_signature INTEGER DEFAULT 0
+      `).run();
+      console.log("Added ProofMode columns to videos table");
+      await db.prepare(`
+        CREATE INDEX IF NOT EXISTS idx_videos_verification ON videos(verification_level)
+      `).run();
+      await db.prepare(`
+        CREATE INDEX IF NOT EXISTS idx_videos_proofmode ON videos(has_proofmode)
+      `).run();
+      await db.prepare(`
+        CREATE INDEX IF NOT EXISTS idx_videos_device_attestation ON videos(has_device_attestation)
+      `).run();
+      await db.prepare(`
+        CREATE INDEX IF NOT EXISTS idx_videos_verification_loops ON videos(verification_level, loop_count DESC, created_at DESC, event_id ASC)
+      `).run();
+      await db.prepare(`
+        CREATE INDEX IF NOT EXISTS idx_videos_verification_likes ON videos(verification_level, likes DESC, created_at DESC, event_id ASC)
+      `).run();
+      console.log("Created ProofMode indexes");
+      console.log("Migration 6: ProofMode verification support added successfully");
+    }
+  },
+  {
+    version: 7,
+    description: "Create FTS5 virtual tables for comprehensive search (NIP-50)",
+    up: async (db) => {
+      await db.prepare(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS users_fts USING fts5(
+          event_id UNINDEXED,
+          pubkey UNINDEXED,
+          name,
+          display_name,
+          about,
+          nip05,
+          tokenize='porter unicode61 remove_diacritics 1'
+        )
+      `).run();
+      console.log("Created users_fts table");
+      await db.prepare(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS videos_fts USING fts5(
+          event_id UNINDEXED,
+          title,
+          description,
+          summary,
+          content,
+          tokenize='porter unicode61'
+        )
+      `).run();
+      console.log("Created videos_fts table");
+      await db.prepare(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS hashtags_fts USING fts5(
+          hashtag,
+          event_id UNINDEXED,
+          tokenize='trigram'
+        )
+      `).run();
+      console.log("Created hashtags_fts table");
+      await db.prepare(`
+        CREATE TABLE IF NOT EXISTS hashtag_stats (
+          hashtag TEXT PRIMARY KEY,
+          total_usage INTEGER DEFAULT 1,
+          unique_events INTEGER DEFAULT 1,
+          first_seen INTEGER NOT NULL,
+          last_seen INTEGER NOT NULL,
+          trending_score REAL DEFAULT 0
+        )
+      `).run();
+      await db.prepare(`
+        CREATE INDEX IF NOT EXISTS idx_hashtag_trending
+          ON hashtag_stats(trending_score DESC, last_seen DESC)
+      `).run();
+      console.log("Created hashtag_stats table and index");
+      await db.prepare(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS lists_fts USING fts5(
+          event_id UNINDEXED,
+          d_tag UNINDEXED,
+          kind UNINDEXED,
+          name,
+          description,
+          content,
+          tokenize='porter unicode61'
+        )
+      `).run();
+      console.log("Created lists_fts table");
+      await db.prepare(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
+          event_id UNINDEXED,
+          content,
+          tokenize='porter unicode61'
+        )
+      `).run();
+      console.log("Created notes_fts table");
+      await db.prepare(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS articles_fts USING fts5(
+          event_id UNINDEXED,
+          d_tag UNINDEXED,
+          title,
+          summary,
+          content,
+          tokenize='porter unicode61'
+        )
+      `).run();
+      console.log("Created articles_fts table");
+      await db.prepare(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS communities_fts USING fts5(
+          event_id UNINDEXED,
+          d_tag UNINDEXED,
+          name,
+          description,
+          tokenize='porter unicode61'
+        )
+      `).run();
+      console.log("Created communities_fts table");
+      console.log("Migration 7: FTS5 virtual tables created successfully");
+    }
   }
   // Add future migrations here with incrementing version numbers
-  // Example:
-  // {
-  //   version: 3,
-  //   description: 'Add video_hashtags junction table for multi-hashtag support',
-  //   up: async (db: D1Database) => {
-  //     await db.prepare(`
-  //       CREATE TABLE IF NOT EXISTS video_hashtags (
-  //         event_id TEXT NOT NULL,
-  //         hashtag TEXT NOT NULL,
-  //         PRIMARY KEY (event_id, hashtag),
-  //         FOREIGN KEY (event_id) REFERENCES videos(event_id) ON DELETE CASCADE
-  //       )
-  //     `).run();
-  //
-  //     await db.prepare(`
-  //       CREATE INDEX IF NOT EXISTS idx_vh_hashtag_event ON video_hashtags(hashtag, event_id)
-  //     `).run();
-  //   }
-  // }
 ];
 async function runMigrations(db) {
   console.log("Starting migration check...");
@@ -3015,9 +3244,531 @@ async function runMigrations(db) {
 }
 __name(runMigrations, "runMigrations");
 
+// src/search-parser.ts
+function parseSearchQuery(query) {
+  const parsed = {
+    raw: query,
+    terms: [],
+    filters: {}
+  };
+  const tokens = query.split(/\s+/);
+  for (const token of tokens) {
+    if (!token)
+      continue;
+    if (token.startsWith("type:")) {
+      parsed.type = token.substring(5);
+    } else if (token.startsWith("author:")) {
+      parsed.filters.author = token.substring(7);
+    } else if (token.startsWith("kind:")) {
+      const kind = parseInt(token.substring(5));
+      if (!isNaN(kind)) {
+        parsed.filters.kinds = [kind];
+      }
+    } else if (token.startsWith("#")) {
+      const tag = token.substring(1);
+      if (tag.length > 0) {
+        if (!parsed.filters.hashtags)
+          parsed.filters.hashtags = [];
+        parsed.filters.hashtags.push(tag);
+      }
+    } else if (token.startsWith("min_likes:")) {
+      const val = parseInt(token.substring(10));
+      if (!isNaN(val)) {
+        parsed.filters.min_likes = val;
+      }
+    } else if (token.startsWith("min_loops:")) {
+      const val = parseInt(token.substring(10));
+      if (!isNaN(val)) {
+        parsed.filters.min_loops = val;
+      }
+    } else if (token.startsWith("since:")) {
+      const val = parseInt(token.substring(6));
+      if (!isNaN(val)) {
+        parsed.filters.since = val;
+      }
+    } else if (token.startsWith("until:")) {
+      const val = parseInt(token.substring(6));
+      if (!isNaN(val)) {
+        parsed.filters.until = val;
+      }
+    } else {
+      parsed.terms.push(token);
+    }
+  }
+  return parsed;
+}
+__name(parseSearchQuery, "parseSearchQuery");
+function buildFTSQuery(terms) {
+  if (terms.length === 0)
+    return "";
+  return terms.map((t) => `${t}*`).join(" OR ");
+}
+__name(buildFTSQuery, "buildFTSQuery");
+
+// src/search.ts
+async function searchUsers(db, query, limit) {
+  const ftsQuery = buildFTSQuery(query.terms);
+  if (!ftsQuery) {
+    return [];
+  }
+  try {
+    const session = db.withSession("first-unconstrained");
+    const results = await session.prepare(`
+      SELECT
+        e.*,
+        u.rank as relevance_score,
+        snippet(users_fts, 2, '<mark>', '</mark>', '...', 32) as snippet
+      FROM users_fts u
+      JOIN events e ON e.id = u.event_id
+      WHERE users_fts MATCH ?
+      ORDER BY u.rank DESC, e.created_at DESC
+      LIMIT ?
+    `).bind(ftsQuery, limit).all();
+    return results.results.map((r) => ({
+      type: "user",
+      event: {
+        id: r.id,
+        pubkey: r.pubkey,
+        created_at: r.created_at,
+        kind: r.kind,
+        tags: JSON.parse(r.tags),
+        content: r.content,
+        sig: r.sig
+      },
+      relevance_score: Math.abs(r.relevance_score || 0),
+      snippet: r.snippet,
+      match_fields: ["name", "about"]
+    }));
+  } catch (error) {
+    console.error("User search error:", error);
+    return [];
+  }
+}
+__name(searchUsers, "searchUsers");
+async function indexUserProfile(db, event) {
+  try {
+    const profile = JSON.parse(event.content);
+    const session = db.withSession("first-primary");
+    await session.prepare(`
+      DELETE FROM users_fts WHERE event_id = ?
+    `).bind(event.id).run();
+    await session.prepare(`
+      INSERT INTO users_fts(event_id, pubkey, name, display_name, about, nip05)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(
+      event.id,
+      event.pubkey,
+      profile.name || "",
+      profile.display_name || profile.displayName || "",
+      profile.about || "",
+      profile.nip05 || ""
+    ).run();
+  } catch (error) {
+    console.error("Error indexing user profile:", error);
+  }
+}
+__name(indexUserProfile, "indexUserProfile");
+async function searchHashtags(db, query, limit) {
+  const searchTerm = query.raw.replace(/^hashtag:#/, "").replace(/^#/, "").toLowerCase();
+  if (!searchTerm) {
+    return [];
+  }
+  try {
+    const session = db.withSession("first-unconstrained");
+    const results = await session.prepare(`
+      SELECT
+        h.hashtag,
+        h.event_id,
+        s.total_usage,
+        s.trending_score
+      FROM hashtags_fts h
+      LEFT JOIN hashtag_stats s ON s.hashtag = h.hashtag
+      WHERE hashtags_fts MATCH ?
+      GROUP BY h.hashtag
+      ORDER BY
+        CASE
+          WHEN h.hashtag = ? THEN 0
+          WHEN h.hashtag LIKE ? THEN 1
+          ELSE 2
+        END,
+        s.trending_score DESC,
+        s.total_usage DESC
+      LIMIT ?
+    `).bind(
+      `${searchTerm}*`,
+      searchTerm,
+      `${searchTerm}%`,
+      limit
+    ).all();
+    return results.results.map((r) => ({
+      type: "hashtag",
+      event: {
+        id: r.event_id || "hashtag-" + r.hashtag,
+        pubkey: "",
+        created_at: 0,
+        kind: 0,
+        tags: [["t", r.hashtag]],
+        content: JSON.stringify({
+          hashtag: r.hashtag,
+          usage: r.total_usage || 0,
+          trending: r.trending_score || 0
+        }),
+        sig: ""
+      },
+      relevance_score: r.trending_score || 0,
+      snippet: `#${r.hashtag}`,
+      match_fields: ["hashtag"]
+    }));
+  } catch (error) {
+    console.error("Hashtag search error:", error);
+    return [];
+  }
+}
+__name(searchHashtags, "searchHashtags");
+async function indexHashtags(db, event) {
+  const hashtags = event.tags.filter((t) => t[0] === "t" && t[1]).map((t) => t[1].toLowerCase());
+  if (hashtags.length === 0)
+    return;
+  try {
+    const session = db.withSession("first-primary");
+    const now = Math.floor(Date.now() / 1e3);
+    for (const hashtag of hashtags) {
+      await session.prepare(`
+        INSERT INTO hashtag_stats(hashtag, total_usage, unique_events, first_seen, last_seen, trending_score)
+        VALUES (?, 1, 1, ?, ?, 1.0)
+        ON CONFLICT(hashtag) DO UPDATE SET
+          total_usage = total_usage + 1,
+          unique_events = unique_events + 1,
+          last_seen = ?,
+          trending_score = (total_usage * 1.0) / (? - first_seen + 86400)
+      `).bind(hashtag, now, now, now, now).run();
+      await session.prepare(`
+        INSERT INTO hashtags_fts(hashtag, event_id)
+        VALUES (?, ?)
+      `).bind(hashtag, event.id).run();
+    }
+  } catch (error) {
+    console.error("Error indexing hashtags:", error);
+  }
+}
+__name(indexHashtags, "indexHashtags");
+async function searchVideos(db, query, limit) {
+  const ftsQuery = buildFTSQuery(query.terms);
+  if (!ftsQuery) {
+    return [];
+  }
+  try {
+    const session = db.withSession("first-unconstrained");
+    const results = await session.prepare(`
+      SELECT
+        e.*,
+        v.loop_count,
+        v.likes,
+        vf.rank as base_relevance,
+        vf.rank * (1 + LOG(COALESCE(v.loop_count, 0) + 1) * 0.1) *
+                  (1 + LOG(COALESCE(v.likes, 0) + 1) * 0.05) as relevance_score,
+        snippet(videos_fts, 1, '<mark>', '</mark>', '...', 64) as snippet
+      FROM videos_fts vf
+      JOIN events e ON e.id = vf.event_id
+      LEFT JOIN videos v ON v.event_id = vf.event_id
+      WHERE videos_fts MATCH ?
+      ORDER BY relevance_score DESC, e.created_at DESC
+      LIMIT ?
+    `).bind(ftsQuery, limit).all();
+    return results.results.map((r) => ({
+      type: "video",
+      event: {
+        id: r.id,
+        pubkey: r.pubkey,
+        created_at: r.created_at,
+        kind: r.kind,
+        tags: JSON.parse(r.tags),
+        content: r.content,
+        sig: r.sig
+      },
+      relevance_score: Math.abs(r.relevance_score || 0),
+      snippet: r.snippet,
+      match_fields: ["title", "description", "content"]
+    }));
+  } catch (error) {
+    console.error("Video search error:", error);
+    return [];
+  }
+}
+__name(searchVideos, "searchVideos");
+async function indexVideo(db, event) {
+  try {
+    const title = event.tags.find((t) => t[0] === "title")?.[1] || "";
+    const summary = event.tags.find((t) => t[0] === "summary")?.[1] || "";
+    const session = db.withSession("first-primary");
+    await session.prepare(`
+      DELETE FROM videos_fts WHERE event_id = ?
+    `).bind(event.id).run();
+    await session.prepare(`
+      INSERT INTO videos_fts(event_id, title, description, summary, content)
+      VALUES (?, ?, ?, ?, ?)
+    `).bind(event.id, title, event.content, summary, event.content).run();
+  } catch (error) {
+    console.error("Error indexing video:", error);
+  }
+}
+__name(indexVideo, "indexVideo");
+async function searchNotes(db, query, limit) {
+  const ftsQuery = buildFTSQuery(query.terms);
+  if (!ftsQuery) {
+    return [];
+  }
+  try {
+    const session = db.withSession("first-unconstrained");
+    const results = await session.prepare(`
+      SELECT
+        e.*,
+        n.rank as relevance_score,
+        snippet(notes_fts, 0, '<mark>', '</mark>', '...', 64) as snippet
+      FROM notes_fts n
+      JOIN events e ON e.id = n.event_id
+      WHERE notes_fts MATCH ?
+      ORDER BY n.rank DESC, e.created_at DESC
+      LIMIT ?
+    `).bind(ftsQuery, limit).all();
+    return results.results.map((r) => ({
+      type: "note",
+      event: {
+        id: r.id,
+        pubkey: r.pubkey,
+        created_at: r.created_at,
+        kind: r.kind,
+        tags: JSON.parse(r.tags),
+        content: r.content,
+        sig: r.sig
+      },
+      relevance_score: Math.abs(r.relevance_score || 0),
+      snippet: r.snippet,
+      match_fields: ["content"]
+    }));
+  } catch (error) {
+    console.error("Note search error:", error);
+    return [];
+  }
+}
+__name(searchNotes, "searchNotes");
+async function indexNote(db, event) {
+  try {
+    const session = db.withSession("first-primary");
+    await session.prepare(`
+      DELETE FROM notes_fts WHERE event_id = ?
+    `).bind(event.id).run();
+    await session.prepare(`
+      INSERT INTO notes_fts(event_id, content)
+      VALUES (?, ?)
+    `).bind(event.id, event.content).run();
+  } catch (error) {
+    console.error("Error indexing note:", error);
+  }
+}
+__name(indexNote, "indexNote");
+async function searchLists(db, query, limit) {
+  const ftsQuery = buildFTSQuery(query.terms);
+  if (!ftsQuery) {
+    return [];
+  }
+  try {
+    const session = db.withSession("first-unconstrained");
+    const results = await session.prepare(`
+      SELECT
+        e.*,
+        l.rank as relevance_score,
+        snippet(lists_fts, 3, '<mark>', '</mark>', '...', 64) as snippet
+      FROM lists_fts l
+      JOIN events e ON e.id = l.event_id
+      WHERE lists_fts MATCH ?
+      ORDER BY l.rank DESC, e.created_at DESC
+      LIMIT ?
+    `).bind(ftsQuery, limit).all();
+    return results.results.map((r) => ({
+      type: "list",
+      event: {
+        id: r.id,
+        pubkey: r.pubkey,
+        created_at: r.created_at,
+        kind: r.kind,
+        tags: JSON.parse(r.tags),
+        content: r.content,
+        sig: r.sig
+      },
+      relevance_score: Math.abs(r.relevance_score || 0),
+      snippet: r.snippet,
+      match_fields: ["name", "description", "content"]
+    }));
+  } catch (error) {
+    console.error("List search error:", error);
+    return [];
+  }
+}
+__name(searchLists, "searchLists");
+async function indexList(db, event) {
+  try {
+    const dTag = event.tags.find((t) => t[0] === "d")?.[1] || "";
+    const name = event.tags.find((t) => t[0] === "name")?.[1] || "";
+    const description = event.tags.find((t) => t[0] === "description")?.[1] || "";
+    const session = db.withSession("first-primary");
+    await session.prepare(`
+      DELETE FROM lists_fts WHERE event_id = ?
+    `).bind(event.id).run();
+    await session.prepare(`
+      INSERT INTO lists_fts(event_id, d_tag, kind, name, description, content)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(event.id, dTag, event.kind, name, description, event.content).run();
+  } catch (error) {
+    console.error("Error indexing list:", error);
+  }
+}
+__name(indexList, "indexList");
+async function searchArticles(db, query, limit) {
+  const ftsQuery = buildFTSQuery(query.terms);
+  if (!ftsQuery) {
+    return [];
+  }
+  try {
+    const session = db.withSession("first-unconstrained");
+    const results = await session.prepare(`
+      SELECT
+        e.*,
+        a.rank as relevance_score,
+        snippet(articles_fts, 2, '<mark>', '</mark>', '...', 64) as snippet
+      FROM articles_fts a
+      JOIN events e ON e.id = a.event_id
+      WHERE articles_fts MATCH ?
+      ORDER BY a.rank DESC, e.created_at DESC
+      LIMIT ?
+    `).bind(ftsQuery, limit).all();
+    return results.results.map((r) => ({
+      type: "article",
+      event: {
+        id: r.id,
+        pubkey: r.pubkey,
+        created_at: r.created_at,
+        kind: r.kind,
+        tags: JSON.parse(r.tags),
+        content: r.content,
+        sig: r.sig
+      },
+      relevance_score: Math.abs(r.relevance_score || 0),
+      snippet: r.snippet,
+      match_fields: ["title", "summary", "content"]
+    }));
+  } catch (error) {
+    console.error("Article search error:", error);
+    return [];
+  }
+}
+__name(searchArticles, "searchArticles");
+async function indexArticle(db, event) {
+  try {
+    const dTag = event.tags.find((t) => t[0] === "d")?.[1] || "";
+    const title = event.tags.find((t) => t[0] === "title")?.[1] || "";
+    const summary = event.tags.find((t) => t[0] === "summary")?.[1] || "";
+    const session = db.withSession("first-primary");
+    await session.prepare(`
+      DELETE FROM articles_fts WHERE event_id = ?
+    `).bind(event.id).run();
+    await session.prepare(`
+      INSERT INTO articles_fts(event_id, d_tag, title, summary, content)
+      VALUES (?, ?, ?, ?, ?)
+    `).bind(event.id, dTag, title, summary, event.content).run();
+  } catch (error) {
+    console.error("Error indexing article:", error);
+  }
+}
+__name(indexArticle, "indexArticle");
+async function searchCommunities(db, query, limit) {
+  const ftsQuery = buildFTSQuery(query.terms);
+  if (!ftsQuery) {
+    return [];
+  }
+  try {
+    const session = db.withSession("first-unconstrained");
+    const results = await session.prepare(`
+      SELECT
+        e.*,
+        c.rank as relevance_score,
+        snippet(communities_fts, 2, '<mark>', '</mark>', '...', 64) as snippet
+      FROM communities_fts c
+      JOIN events e ON e.id = c.event_id
+      WHERE communities_fts MATCH ?
+      ORDER BY c.rank DESC, e.created_at DESC
+      LIMIT ?
+    `).bind(ftsQuery, limit).all();
+    return results.results.map((r) => ({
+      type: "community",
+      event: {
+        id: r.id,
+        pubkey: r.pubkey,
+        created_at: r.created_at,
+        kind: r.kind,
+        tags: JSON.parse(r.tags),
+        content: r.content,
+        sig: r.sig
+      },
+      relevance_score: Math.abs(r.relevance_score || 0),
+      snippet: r.snippet,
+      match_fields: ["name", "description"]
+    }));
+  } catch (error) {
+    console.error("Community search error:", error);
+    return [];
+  }
+}
+__name(searchCommunities, "searchCommunities");
+async function indexCommunity(db, event) {
+  try {
+    const dTag = event.tags.find((t) => t[0] === "d")?.[1] || "";
+    const name = event.tags.find((t) => t[0] === "name")?.[1] || "";
+    const description = event.tags.find((t) => t[0] === "description")?.[1] || "";
+    const session = db.withSession("first-primary");
+    await session.prepare(`
+      DELETE FROM communities_fts WHERE event_id = ?
+    `).bind(event.id).run();
+    await session.prepare(`
+      INSERT INTO communities_fts(event_id, d_tag, name, description)
+      VALUES (?, ?, ?, ?)
+    `).bind(event.id, dTag, name, description).run();
+  } catch (error) {
+    console.error("Error indexing community:", error);
+  }
+}
+__name(indexCommunity, "indexCommunity");
+async function searchUnified(db, query, limit) {
+  const [users, videos, lists, notes, articles, communities] = await Promise.all([
+    searchUsers(db, query, Math.ceil(limit * 0.15)),
+    // 15%
+    searchVideos(db, query, Math.ceil(limit * 0.35)),
+    // 35%
+    searchLists(db, query, Math.ceil(limit * 0.1)),
+    // 10%
+    searchNotes(db, query, Math.ceil(limit * 0.25)),
+    // 25%
+    searchArticles(db, query, Math.ceil(limit * 0.1)),
+    // 10%
+    searchCommunities(db, query, Math.ceil(limit * 0.05))
+    // 5%
+  ]);
+  const allResults = [
+    ...users,
+    ...videos,
+    ...lists,
+    ...notes,
+    ...articles,
+    ...communities
+  ];
+  return allResults.sort((a, b) => b.relevance_score - a.relevance_score).slice(0, limit);
+}
+__name(searchUnified, "searchUnified");
+
 // src/relay-worker.ts
 var {
   relayInfo: relayInfo2,
+  getRelayInfo: getRelayInfo2,
   PAY_TO_RELAY_ENABLED: PAY_TO_RELAY_ENABLED2,
   RELAY_ACCESS_PRICE_SATS: RELAY_ACCESS_PRICE_SATS2,
   relayNpub: relayNpub2,
@@ -3034,13 +3785,14 @@ var ARCHIVE_BATCH_SIZE = 10;
 var GLOBAL_MAX_EVENTS = 5e3;
 var MAX_QUERY_COMPLEXITY = 1e3;
 async function initializeDatabase(db) {
+  await runMigrations(db);
   try {
     const session2 = db.withSession("first-unconstrained");
     const initCheck = await session2.prepare(
       "SELECT value FROM system_config WHERE key = 'db_initialized' LIMIT 1"
     ).first().catch(() => null);
     if (initCheck && initCheck.value === "1") {
-      console.log("Database already initialized");
+      console.log("Database already initialized, migrations complete");
       return;
     }
   } catch (error) {
@@ -3147,7 +3899,6 @@ async function initializeDatabase(db) {
     await session.prepare("ANALYZE events").run();
     await session.prepare("ANALYZE tags").run();
     await session.prepare("ANALYZE event_tags_cache").run();
-    await runMigrations(db);
     try {
       await session.prepare("ANALYZE videos").run();
     } catch (e) {
@@ -3426,6 +4177,16 @@ async function processEvent(event, sessionId, env) {
   }
 }
 __name(processEvent, "processEvent");
+function isReplaceableKind(kind) {
+  if (kind === 0 || kind === 3)
+    return true;
+  if (kind >= 1e4 && kind < 2e4)
+    return true;
+  if (kind >= 3e4 && kind < 4e4)
+    return true;
+  return false;
+}
+__name(isReplaceableKind, "isReplaceableKind");
 async function saveEventToD1(event, env) {
   try {
     const session = env.RELAY_DATABASE.withSession("first-primary");
@@ -3434,6 +4195,39 @@ async function saveEventToD1(event, env) {
       const duplicateCheck = enableGlobalDuplicateCheck2 ? await session.prepare("SELECT event_id FROM content_hashes WHERE hash = ? LIMIT 1").bind(contentHash).first() : await session.prepare("SELECT event_id FROM content_hashes WHERE hash = ? AND pubkey = ? LIMIT 1").bind(contentHash, event.pubkey).first();
       if (duplicateCheck) {
         return { success: false, message: "duplicate: content already exists" };
+      }
+    }
+    if (isReplaceableKind(event.kind)) {
+      const isParameterized = event.kind >= 3e4 && event.kind < 4e4;
+      if (isParameterized) {
+        const dTag = event.tags.find((t) => t[0] === "d")?.[1] || "";
+        const existing = await session.prepare(`
+          SELECT id, created_at, tags FROM events
+          WHERE pubkey = ? AND kind = ?
+          ORDER BY created_at DESC LIMIT 1
+        `).bind(event.pubkey, event.kind).first();
+        if (existing) {
+          const existingTags = JSON.parse(existing.tags);
+          const existingDTag = existingTags.find((t) => t[0] === "d")?.[1] || "";
+          if (existingDTag === dTag) {
+            if (existing.created_at > event.created_at) {
+              return { success: false, message: "duplicate: newer event already exists" };
+            }
+            await session.prepare(`DELETE FROM events WHERE id = ?`).bind(existing.id).run();
+          }
+        }
+      } else {
+        const existing = await session.prepare(`
+          SELECT id, created_at FROM events
+          WHERE pubkey = ? AND kind = ?
+          ORDER BY created_at DESC LIMIT 1
+        `).bind(event.pubkey, event.kind).first();
+        if (existing) {
+          if (existing.created_at > event.created_at) {
+            return { success: false, message: "duplicate: newer event already exists" };
+          }
+          await session.prepare(`DELETE FROM events WHERE id = ?`).bind(existing.id).run();
+        }
       }
     }
     await session.prepare(`
@@ -3500,22 +4294,120 @@ async function saveEventToD1(event, env) {
         const views = getTagValue("views");
         const tTags = event.tags.filter((t) => t[0] === "t");
         const hashtag = tTags.length > 0 ? tTags[0][1] : null;
+        const verificationTag = event.tags.find((t) => t[0] === "verification");
+        const proofmodeTag = event.tags.find((t) => t[0] === "proofmode");
+        const deviceAttestationTag = event.tags.find((t) => t[0] === "device_attestation");
+        const pgpFingerprintTag = event.tags.find((t) => t[0] === "pgp_fingerprint");
+        const verificationLevel = verificationTag?.[1] || null;
+        const hasProofmode = proofmodeTag ? 1 : 0;
+        const hasDeviceAttestation = deviceAttestationTag ? 1 : 0;
+        const hasPgpSignature = pgpFingerprintTag ? 1 : 0;
         await session.prepare(`
-          INSERT INTO videos (event_id, author, created_at, loop_count, likes, comments, reposts, views, avg_completion, hashtag)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+          INSERT INTO videos (
+            event_id, author, created_at, loop_count, likes, comments, reposts, views, avg_completion, hashtag,
+            verification_level, has_proofmode, has_device_attestation, has_pgp_signature
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
           ON CONFLICT(event_id) DO UPDATE SET
             loop_count = excluded.loop_count,
             likes = excluded.likes,
             comments = excluded.comments,
             reposts = excluded.reposts,
             views = excluded.views,
-            hashtag = excluded.hashtag
-        `).bind(event.id, event.pubkey, event.created_at, loopCount, likes, comments, reposts, views, hashtag).run();
+            hashtag = excluded.hashtag,
+            verification_level = excluded.verification_level,
+            has_proofmode = excluded.has_proofmode,
+            has_device_attestation = excluded.has_device_attestation,
+            has_pgp_signature = excluded.has_pgp_signature
+        `).bind(
+          event.id,
+          event.pubkey,
+          event.created_at,
+          loopCount,
+          likes,
+          comments,
+          reposts,
+          views,
+          hashtag,
+          verificationLevel,
+          hasProofmode,
+          hasDeviceAttestation,
+          hasPgpSignature
+        ).run();
         console.log(`Video metrics saved for event ${event.id}`);
+        const uniqueTTags = [...new Set(tTags.map((t) => t[1]).filter((h) => h))];
+        await session.prepare(`
+          DELETE FROM video_hashtags WHERE event_id = ?
+        `).bind(event.id).run();
+        for (const tag of uniqueTTags) {
+          await session.prepare(`
+            INSERT INTO video_hashtags (event_id, hashtag)
+            VALUES (?, ?)
+            ON CONFLICT DO NOTHING
+          `).bind(event.id, tag).run();
+        }
+        if (uniqueTTags.length > 0) {
+          console.log(`Stored ${uniqueTTags.length} #t tag(s) for event ${event.id}`);
+        }
+        const pTags = event.tags.filter((t) => t[0] === "p" && t[1]);
+        const uniquePTags = [...new Set(pTags.map((t) => t[1]))];
+        for (const pubkey of uniquePTags) {
+          await session.prepare(`
+            INSERT INTO video_mentions (event_id, pubkey)
+            VALUES (?, ?)
+            ON CONFLICT DO NOTHING
+          `).bind(event.id, pubkey).run();
+        }
+        if (uniquePTags.length > 0) {
+          console.log(`Stored ${uniquePTags.length} #p tag(s) for event ${event.id}`);
+        }
+        const eTags = event.tags.filter((t) => t[0] === "e" && t[1]);
+        const uniqueETags = [...new Set(eTags.map((t) => t[1]))];
+        for (const refEventId of uniqueETags) {
+          await session.prepare(`
+            INSERT INTO video_references (event_id, referenced_event_id)
+            VALUES (?, ?)
+            ON CONFLICT DO NOTHING
+          `).bind(event.id, refEventId).run();
+        }
+        if (uniqueETags.length > 0) {
+          console.log(`Stored ${uniqueETags.length} #e tag(s) for event ${event.id}`);
+        }
+        const aTags = event.tags.filter((t) => t[0] === "a" && t[1]);
+        const uniqueATags = [...new Set(aTags.map((t) => t[1]))];
+        for (const address of uniqueATags) {
+          await session.prepare(`
+            INSERT INTO video_addresses (event_id, address)
+            VALUES (?, ?)
+            ON CONFLICT DO NOTHING
+          `).bind(event.id, address).run();
+        }
+        if (uniqueATags.length > 0) {
+          console.log(`Stored ${uniqueATags.length} #a tag(s) for event ${event.id}`);
+        }
       } catch (videoError) {
         console.error(`Error saving video metrics for ${event.id}:`, videoError.message);
       }
     }
+    if (event.kind === 0) {
+      await indexUserProfile(env.RELAY_DATABASE, event);
+    }
+    if (event.kind === 1) {
+      await indexNote(env.RELAY_DATABASE, event);
+    }
+    if (event.kind === 34236) {
+      await indexVideo(env.RELAY_DATABASE, event);
+    }
+    if (event.kind >= 3e4 && event.kind <= 30003) {
+      await indexList(env.RELAY_DATABASE, event);
+    }
+    if (event.kind === 30023) {
+      await indexArticle(env.RELAY_DATABASE, event);
+    }
+    if (event.kind === 34550) {
+      await indexCommunity(env.RELAY_DATABASE, event);
+    }
+    await indexHashtags(env.RELAY_DATABASE, event);
     console.log(`Event ${event.id} saved successfully to D1.`);
     return { success: true, message: "Event received successfully for processing" };
   } catch (error) {
@@ -4565,8 +5457,8 @@ async function queryEventsWithArchive(filters, bookmark, env) {
   };
 }
 __name(queryEventsWithArchive, "queryEventsWithArchive");
-function handleRelayInfoRequest(request) {
-  const responseInfo = { ...relayInfo2 };
+function handleRelayInfoRequest(request, env) {
+  const responseInfo = { ...getRelayInfo2(env) };
   if (PAY_TO_RELAY_ENABLED2) {
     const url = new URL(request.url);
     responseInfo.payments_url = `${url.protocol}//${url.host}`;
@@ -4585,6 +5477,652 @@ function handleRelayInfoRequest(request) {
   });
 }
 __name(handleRelayInfoRequest, "handleRelayInfoRequest");
+function serveDocumentation() {
+  const docsHtml = `<h1>Developer Documentation</h1>
+<h2>Divine Video Relay - Video Discovery & Sorting</h2>
+<h3>Overview</h3>
+<p>The Divine Video relay (relay.divine.video) is a specialized Nostr relay with custom vendor extensions for discovering and sorting short-form videos by engagement metrics.</p>
+<h3>Relay Information</h3>
+<ul>
+<li><strong>URL</strong>: <code>wss://relay.divine.video</code></li>
+<li><strong>Video Event Kind</strong>: <code>34236</code> (vertical video)</li>
+<li><strong>Supported Metrics</strong>: <code>loop_count</code>, <code>likes</code>, <code>views</code>, <code>comments</code>, <code>avg_completion</code></li>
+</ul>
+<hr>
+<h2>Quick Start</h2>
+<h3>JavaScript / Node.js</h3>
+<pre><code class="language-javascript">import WebSocket from &#39;ws&#39;;
+
+const ws = new WebSocket(&#39;wss://relay.divine.video&#39;);
+
+ws.on(&#39;open&#39;, () =&gt; {
+  // Query trending videos
+  ws.send(JSON.stringify([
+    &#39;REQ&#39;,
+    &#39;trending&#39;,
+    {
+      kinds: [34236],
+      sort: { field: &#39;loop_count&#39;, dir: &#39;desc&#39; },
+      limit: 20
+    }
+  ]));
+});
+
+ws.on(&#39;message&#39;, (data) =&gt; {
+  const [type, subId, event] = JSON.parse(data);
+  if (type === &#39;EVENT&#39;) {
+    console.log(&#39;Video:&#39;, event);
+  }
+});
+</code></pre>
+<h3>Python</h3>
+<pre><code class="language-python">import websocket
+import json
+
+ws = websocket.create_connection(&#39;wss://relay.divine.video&#39;)
+
+# Query trending videos
+query = [&#39;REQ&#39;, &#39;trending&#39;, {
+    &#39;kinds&#39;: [34236],
+    &#39;sort&#39;: {&#39;field&#39;: &#39;loop_count&#39;, &#39;dir&#39;: &#39;desc&#39;},
+    &#39;limit&#39;: 20
+}]
+ws.send(json.dumps(query))
+
+while True:
+    message = json.loads(ws.recv())
+    if message[0] == &#39;EVENT&#39;:
+        print(f&#39;Video: {message[2]}&#39;)
+    elif message[0] == &#39;EOSE&#39;:
+        break
+</code></pre>
+<h3>Using wscat (testing)</h3>
+<pre><code class="language-bash">wscat -c wss://relay.divine.video
+
+# Then send:
+[&quot;REQ&quot;,&quot;test&quot;,{&quot;kinds&quot;:[34236],&quot;sort&quot;:{&quot;field&quot;:&quot;loop_count&quot;,&quot;dir&quot;:&quot;desc&quot;},&quot;limit&quot;:5}]
+</code></pre>
+<hr>
+<h2>Basic Query Structure</h2>
+<p>All queries follow standard Nostr REQ format with added vendor extensions:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;subscription_id&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;loop_count&quot;,  // or &quot;likes&quot;, &quot;views&quot;, &quot;comments&quot;, &quot;avg_completion&quot;, &quot;created_at&quot;
+    &quot;dir&quot;: &quot;desc&quot;           // or &quot;asc&quot;
+  },
+  &quot;limit&quot;: 20
+}]
+</code></pre>
+<hr>
+<h2>Common Query Examples</h2>
+<h3>1. Most Looped Videos (Trending)</h3>
+<p>Get videos with the most loops (plays):</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;trending&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;loop_count&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 50
+}]
+</code></pre>
+<h3>2. Most Liked Videos</h3>
+<p>Get videos sorted by number of likes:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;most-liked&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;likes&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 50
+}]
+</code></pre>
+<h3>3. Most Viewed Videos</h3>
+<p>Get videos sorted by view count:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;most-viewed&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;views&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 50
+}]
+</code></pre>
+<h3>4. Newest Videos First</h3>
+<p>Get most recently published videos:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;newest&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;created_at&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 50
+}]
+</code></pre>
+<hr>
+<h2>Filtering by Engagement Metrics</h2>
+<p>Use <code>int#&lt;metric&gt;</code> filters to set thresholds:</p>
+<h3>5. Popular Videos (minimum threshold)</h3>
+<p>Get videos with at least 100 likes:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;popular&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;int#likes&quot;: {&quot;gte&quot;: 100},
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;loop_count&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 20
+}]
+</code></pre>
+<h3>6. Range Queries</h3>
+<p>Get videos with 10-100 likes:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;moderate-engagement&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;int#likes&quot;: {
+    &quot;gte&quot;: 10,
+    &quot;lte&quot;: 100
+  },
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;created_at&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 50
+}]
+</code></pre>
+<h3>7. Highly Engaged Videos</h3>
+<p>Combine multiple metric filters:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;highly-engaged&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;int#likes&quot;: {&quot;gte&quot;: 50},
+  &quot;int#loop_count&quot;: {&quot;gte&quot;: 1000},
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;likes&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 20
+}]
+</code></pre>
+<hr>
+<h2>Hashtag Filtering</h2>
+<h3>8. Videos by Hashtag</h3>
+<p>Get videos tagged with specific hashtags:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;music-videos&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;#t&quot;: [&quot;music&quot;],
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;likes&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 20
+}]
+</code></pre>
+<h3>9. Multiple Hashtags (OR logic)</h3>
+<p>Videos with ANY of these tags:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;entertainment&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;#t&quot;: [&quot;music&quot;, &quot;dance&quot;, &quot;comedy&quot;],
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;loop_count&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 50
+}]
+</code></pre>
+<hr>
+<h2>Author Queries</h2>
+<h3>10. Videos by Specific Author</h3>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;author-videos&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;authors&quot;: [&quot;pubkey_hex_here&quot;],
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;created_at&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 20
+}]
+</code></pre>
+<h3>11. Top Videos by Author</h3>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;author-top-videos&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;authors&quot;: [&quot;pubkey_hex_here&quot;],
+  &quot;sort&quot;: {
+    &quot;field&quot;: &quot;loop_count&quot;,
+    &quot;dir&quot;: &quot;desc&quot;
+  },
+  &quot;limit&quot;: 10
+}]
+</code></pre>
+<hr>
+<h2>Pagination</h2>
+<h3>12. Using Cursors for Infinite Scroll</h3>
+<p>The relay returns a cursor in the EOSE message for pagination:</p>
+<pre><code class="language-javascript">// Send initial query
+ws.send(JSON.stringify([&#39;REQ&#39;, &#39;feed&#39;, {
+  kinds: [34236],
+  sort: {field: &#39;loop_count&#39;, dir: &#39;desc&#39;},
+  limit: 20
+}]));
+
+// Listen for EOSE message with cursor
+ws.on(&#39;message&#39;, (data) =&gt; {
+  const message = JSON.parse(data);
+
+  if (message[0] === &#39;EOSE&#39;) {
+    const subscriptionId = message[1];
+    const cursor = message[2]; // Cursor for next page
+
+    if (cursor) {
+      // Fetch next page
+      ws.send(JSON.stringify([&#39;REQ&#39;, &#39;feed-page-2&#39;, {
+        kinds: [34236],
+        sort: {field: &#39;loop_count&#39;, dir: &#39;desc&#39;},
+        limit: 20,
+        cursor: cursor
+      }]));
+    }
+  }
+});
+</code></pre>
+<hr>
+<h2>Available Metrics</h2>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Description</th>
+<th>Tag Name</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>loop_count</code></td>
+<td>Number of times video was looped/replayed</td>
+<td><code>loops</code></td>
+</tr>
+<tr>
+<td><code>likes</code></td>
+<td>Number of likes</td>
+<td><code>likes</code></td>
+</tr>
+<tr>
+<td><code>views</code></td>
+<td>Number of views</td>
+<td><code>views</code></td>
+</tr>
+<tr>
+<td><code>comments</code></td>
+<td>Number of comments</td>
+<td><code>comments</code></td>
+</tr>
+<tr>
+<td><code>avg_completion</code></td>
+<td>Average completion rate (0-100)</td>
+<td>Not in tags yet</td>
+</tr>
+<tr>
+<td><code>created_at</code></td>
+<td>Unix timestamp of publication</td>
+<td>Event&#39;s <code>created_at</code></td>
+</tr>
+</tbody></table>
+<hr>
+<h2>Reading Metrics from Events</h2>
+<p>When you receive an EVENT, metrics are in the tags array:</p>
+<pre><code class="language-javascript">ws.on(&#39;message&#39;, (data) =&gt; {
+  const [type, subId, event] = JSON.parse(data);
+
+  if (type === &#39;EVENT&#39;) {
+    // Extract metrics from tags
+    const loops = getTagValue(event.tags, &#39;loops&#39;);
+    const likes = getTagValue(event.tags, &#39;likes&#39;);
+    const views = getTagValue(event.tags, &#39;views&#39;);
+    const comments = getTagValue(event.tags, &#39;comments&#39;);
+    const vineId = getTagValue(event.tags, &#39;d&#39;); // Original Vine ID
+
+    console.log(\`Video \${vineId}: \${loops} loops, \${likes} likes\`);
+  }
+});
+
+function getTagValue(tags, tagName) {
+  const tag = tags.find(t =&gt; t[0] === tagName);
+  return tag ? parseInt(tag[1]) || 0 : 0;
+}
+</code></pre>
+<pre><code class="language-python"># Python example
+def handle_event(event):
+    tags = event[&#39;tags&#39;]
+
+    # Extract metrics
+    loops = get_tag_value(tags, &#39;loops&#39;)
+    likes = get_tag_value(tags, &#39;likes&#39;)
+    views = get_tag_value(tags, &#39;views&#39;)
+    vine_id = get_tag_value(tags, &#39;d&#39;)
+
+    print(f&#39;Video {vine_id}: {loops} loops, {likes} likes&#39;)
+
+def get_tag_value(tags, tag_name):
+    for tag in tags:
+        if tag[0] == tag_name:
+            return int(tag[1]) if len(tag) &gt; 1 else 0
+    return 0
+</code></pre>
+<hr>
+<h2>Feed Recommendations</h2>
+<h3>For You Feed</h3>
+<p>Trending content from last 24 hours:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;for-you&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;since&quot;: 1704067200,
+  &quot;sort&quot;: {&quot;field&quot;: &quot;loop_count&quot;, &quot;dir&quot;: &quot;desc&quot;},
+  &quot;limit&quot;: 50
+}]
+</code></pre>
+<h3>Discover Feed</h3>
+<p>High engagement, diverse content:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;discover&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;int#likes&quot;: {&quot;gte&quot;: 20},
+  &quot;int#loop_count&quot;: {&quot;gte&quot;: 500},
+  &quot;sort&quot;: {&quot;field&quot;: &quot;created_at&quot;, &quot;dir&quot;: &quot;desc&quot;},
+  &quot;limit&quot;: 100
+}]
+</code></pre>
+<h3>Trending Feed</h3>
+<p>Pure virality - most loops:</p>
+<pre><code class="language-json">[&quot;REQ&quot;, &quot;trending&quot;, {
+  &quot;kinds&quot;: [34236],
+  &quot;sort&quot;: {&quot;field&quot;: &quot;loop_count&quot;, &quot;dir&quot;: &quot;desc&quot;},
+  &quot;limit&quot;: 50
+}]
+</code></pre>
+<hr>
+<h2>Rate Limits</h2>
+<ul>
+<li><strong>Maximum limit per query</strong>: 200 events</li>
+<li><strong>Query rate</strong>: Up to 50 REQ messages per minute per connection</li>
+<li><strong>Publish rate</strong>: Up to 10 EVENT messages per minute per pubkey</li>
+</ul>
+<hr>
+<h2>Error Handling</h2>
+<p>The relay will send a CLOSED message if a query is invalid:</p>
+<pre><code class="language-javascript">ws.on(&#39;message&#39;, (data) =&gt; {
+  const message = JSON.parse(data);
+
+  if (message[0] === &#39;CLOSED&#39;) {
+    const subscriptionId = message[1];
+    const reason = message[2];
+    console.log(\`Subscription \${subscriptionId} closed: \${reason}\`);
+
+    // Common reasons:
+    // - &#39;invalid: unsupported sort field&#39;
+    // - &#39;invalid: limit exceeds maximum (200)&#39;
+    // - &#39;blocked: kinds [...] not allowed&#39;
+  }
+});
+</code></pre>
+<hr>
+<h2>Testing</h2>
+<p>You can test queries using wscat:</p>
+<pre><code class="language-bash"># Connect to relay
+wscat -c wss://relay.divine.video
+
+# Send query (paste this after connecting)
+[&quot;REQ&quot;, &quot;test&quot;, {&quot;kinds&quot;: [34236], &quot;sort&quot;: {&quot;field&quot;: &quot;loop_count&quot;, &quot;dir&quot;: &quot;desc&quot;}, &quot;limit&quot;: 5}]
+</code></pre>
+<hr>
+<h2>NIP-11 Relay Information (Discovery)</h2>
+<h3>Checking Relay Capabilities</h3>
+<p>Before using vendor extensions, check the relay&#39;s NIP-11 document to verify support:</p>
+<pre><code class="language-bash">curl -H &quot;Accept: application/nostr+json&quot; https://relay.divine.video
+</code></pre>
+<h3>JavaScript Example</h3>
+<pre><code class="language-javascript">async function getRelayCapabilities(relayUrl) {
+  // Convert wss:// to https://
+  const httpUrl = relayUrl.replace(&#39;wss://&#39;, &#39;https://&#39;).replace(&#39;ws://&#39;, &#39;http://&#39;);
+
+  const response = await fetch(httpUrl, {
+    headers: {&#39;Accept&#39;: &#39;application/nostr+json&#39;}
+  });
+
+  const relayInfo = await response.json();
+
+  if (relayInfo.divine_extensions) {
+    console.log(&#39;Supported sort fields:&#39;, relayInfo.divine_extensions.sort_fields);
+    console.log(&#39;Supported filters:&#39;, relayInfo.divine_extensions.int_filters);
+    console.log(&#39;Max limit:&#39;, relayInfo.divine_extensions.limit_max);
+  }
+
+  return relayInfo;
+}
+
+// Usage
+const info = await getRelayCapabilities(&#39;wss://relay.divine.video&#39;);
+</code></pre>
+<h3>Python Example</h3>
+<pre><code class="language-python">import requests
+
+def get_relay_capabilities(relay_url):
+    http_url = relay_url.replace(&#39;wss://&#39;, &#39;https://&#39;).replace(&#39;ws://&#39;, &#39;http://&#39;)
+
+    response = requests.get(http_url, headers={
+        &#39;Accept&#39;: &#39;application/nostr+json&#39;
+    })
+
+    relay_info = response.json()
+
+    if &#39;divine_extensions&#39; in relay_info:
+        print(f&quot;Supported sort fields: {relay_info[&#39;divine_extensions&#39;][&#39;sort_fields&#39;]}&quot;)
+        print(f&quot;Supported filters: {relay_info[&#39;divine_extensions&#39;][&#39;int_filters&#39;]}&quot;)
+
+    return relay_info
+
+# Usage
+info = get_relay_capabilities(&#39;wss://relay.divine.video&#39;)
+</code></pre>
+<h3>Example NIP-11 Response</h3>
+<pre><code class="language-json">{
+  &quot;name&quot;: &quot;Divine Video Relay&quot;,
+  &quot;description&quot;: &quot;A specialized Nostr relay for Divine Video&#39;s 6-second short-form videos&quot;,
+  &quot;supported_nips&quot;: [1, 2, 4, 5, 9, 11, 12, 15, 16, 17, 20, 22, 33, 40],
+  &quot;divine_extensions&quot;: {
+    &quot;int_filters&quot;: [&quot;loop_count&quot;, &quot;likes&quot;, &quot;views&quot;, &quot;comments&quot;, &quot;avg_completion&quot;],
+    &quot;sort_fields&quot;: [&quot;loop_count&quot;, &quot;likes&quot;, &quot;views&quot;, &quot;comments&quot;, &quot;avg_completion&quot;, &quot;created_at&quot;],
+    &quot;cursor_format&quot;: &quot;base64url-encoded HMAC-SHA256 with query hash binding&quot;,
+    &quot;videos_kind&quot;: 34236,
+    &quot;metrics_freshness_sec&quot;: 3600,
+    &quot;limit_max&quot;: 200
+  }
+}
+</code></pre>
+<h3>What Each Field Means</h3>
+<ul>
+<li><strong><code>int_filters</code></strong>: Metrics you can use with <code>int#&lt;metric&gt;</code> filters (e.g., <code>int#likes</code>)</li>
+<li><strong><code>sort_fields</code></strong>: Fields you can use in the <code>sort</code> parameter</li>
+<li><strong><code>cursor_format</code></strong>: How pagination cursors are generated (for security)</li>
+<li><strong><code>videos_kind</code></strong>: The Nostr event kind for videos (34236)</li>
+<li><strong><code>metrics_freshness_sec</code></strong>: How often metrics are updated (hourly = 3600 seconds)</li>
+<li><strong><code>limit_max</code></strong>: Maximum events you can request in a single query (200)</li>
+</ul>
+<hr>
+<h2>Support</h2>
+<p>For questions or issues:</p>
+<ul>
+<li>GitHub: <a href="https://github.com/rabble/nosflare">https://github.com/rabble/nosflare</a></li>
+<li>Relay Maintainer: <a href="mailto:relay@divine.video">relay@divine.video</a></li>
+</ul>
+`;
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Developer documentation for integrating with Divine Video relay - WebSocket API examples in JavaScript, Python, and more" />
+    <title>Developer Documentation - Divine Video Relay</title>
+    <link href="https://fonts.googleapis.com/css2?family=Pacifico&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: #ffffff;
+            color: #333333;
+            line-height: 1.6;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #00BFA5 0%, #00897B 100%);
+            color: white;
+            padding: 2rem;
+            text-align: center;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .logo {
+            font-family: 'Pacifico', cursive;
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .back-link {
+            display: inline-block;
+            color: #00BFA5;
+            text-decoration: none;
+            margin-bottom: 2rem;
+            font-weight: 500;
+        }
+
+        .back-link:hover {
+            text-decoration: underline;
+        }
+
+        .content {
+            background: white;
+        }
+
+        .content h1 {
+            color: #00BFA5;
+            margin-top: 2rem;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid #00BFA5;
+        }
+
+        .content h2 {
+            color: #00897B;
+            margin-top: 1.5rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .content h3 {
+            color: #333;
+            margin-top: 1.25rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .content p {
+            margin-bottom: 1rem;
+        }
+
+        .content ul, .content ol {
+            margin-left: 2rem;
+            margin-bottom: 1rem;
+        }
+
+        .content li {
+            margin-bottom: 0.5rem;
+        }
+
+        .content pre {
+            background: #1e1e1e;
+            border-radius: 8px;
+            padding: 1rem;
+            overflow-x: auto;
+            margin-bottom: 1rem;
+            color: #fff;
+        }
+
+        .content code {
+            font-family: 'Courier New', Courier, monospace;
+            background: #f5f5f5;
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+
+        .content pre code {
+            background: transparent;
+            padding: 0;
+            color: #61afef;
+        }
+
+        .content table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1rem;
+        }
+
+        .content th, .content td {
+            border: 1px solid #ddd;
+            padding: 0.75rem;
+            text-align: left;
+        }
+
+        .content th {
+            background: #00BFA5;
+            color: white;
+        }
+
+        .content tr:nth-child(even) {
+            background: #f9f9f9;
+        }
+
+        .content hr {
+            border: none;
+            border-top: 2px solid #e0e0e0;
+            margin: 2rem 0;
+        }
+
+        .content a {
+            color: #00BFA5;
+            text-decoration: none;
+        }
+
+        .content a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo">diVine Relay</div>
+        <p>Developer Documentation</p>
+    </div>
+
+    <div class="container">
+        <a href="/" class="back-link">\u2190 Back to Home</a>
+        <div class="content">
+            ${docsHtml}
+        </div>
+    </div>
+</body>
+</html>
+`;
+  return new Response(html, {
+    headers: { "Content-Type": "text/html; charset=utf-8" }
+  });
+}
+__name(serveDocumentation, "serveDocumentation");
 function serveLandingPage() {
   const payToRelaySection = PAY_TO_RELAY_ENABLED2 ? `
     <div class="pay-section" id="paySection">
@@ -4812,9 +6350,9 @@ function serveLandingPage() {
         
         <div class="links">
             <a href="https://divine.video" class="link primary" target="_blank">Get the App</a>
+            <a href="/docs" class="link">Developer Docs</a>
             <a href="https://divine.video/about" class="link" target="_blank">About Divine Video</a>
             <a href="https://divine.video/proofmode" class="link" target="_blank">What is ProofMode?</a>
-            <a href="https://divine.video/nostr" class="link" target="_blank">About Nostr</a>
         </div>
     </div>
     
@@ -5370,6 +6908,17 @@ var relay_worker_default = {
       if (url.pathname === "/api/check-payment" && PAY_TO_RELAY_ENABLED2) {
         return await handleCheckPayment(request, env);
       }
+      if (request.method === "OPTIONS") {
+        return new Response(null, {
+          status: 204,
+          headers: {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Accept, Upgrade, Connection, Sec-WebSocket-Key, Sec-WebSocket-Version, Sec-WebSocket-Protocol",
+            "Access-Control-Max-Age": "86400"
+          }
+        });
+      }
       if (url.pathname === "/") {
         if (request.headers.get("Upgrade") === "websocket") {
           const cf = request.cf;
@@ -5382,7 +6931,7 @@ var relay_worker_default = {
           newUrl.searchParams.set("doName", doName);
           return stub.fetch(new Request(newUrl, request));
         } else if (request.headers.get("Accept") === "application/nostr+json") {
-          return handleRelayInfoRequest(request);
+          return handleRelayInfoRequest(request, env);
         } else {
           ctx.waitUntil(
             initializeDatabase(env.RELAY_DATABASE).catch((e) => console.error("DB init error:", e))
@@ -5393,6 +6942,16 @@ var relay_worker_default = {
         return handleNIP05Request(url);
       } else if (url.pathname === "/favicon.ico") {
         return await serveFavicon();
+      } else if (url.pathname === "/docs") {
+        return serveDocumentation();
+      } else if (url.pathname === "/_migrations") {
+        const migrations = await env.RELAY_DATABASE.prepare(
+          'SELECT version, description, datetime(applied_at, "unixepoch") as applied FROM schema_migrations ORDER BY version'
+        ).all();
+        const tables = await env.RELAY_DATABASE.prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).all();
+        return Response.json({ migrations: migrations.results, tables: tables.results });
       } else {
         return new Response("Invalid request", { status: 400 });
       }
@@ -5557,7 +7116,12 @@ function shouldUseVideosTable(filter) {
   if (!filter.kinds?.includes(34236)) {
     return false;
   }
-  return Object.keys(filter).some((k) => k.startsWith("int#")) || // Has int# filters
+  return !!filter.authors || // Author filtering
+  !!filter["#p"] || // Mention filtering
+  !!filter["#e"] || // Reference filtering
+  !!filter["#a"] || // Address filtering
+  !!filter.verification || // ProofMode verification level filtering
+  Object.keys(filter).some((k) => k.startsWith("int#")) || // Has int# filters
   filter.sort && filter.sort.field !== "created_at" || // Non-default sort
   !!filter.cursor;
 }
@@ -5597,10 +7161,35 @@ __name(buildKeysetClauseAsc, "buildKeysetClauseAsc");
 async function buildVideoQuery(filter, cursorSecret, previousCursorSecret) {
   const where = [];
   const args = [];
+  if (filter.authors?.length) {
+    const placeholders = filter.authors.map(() => "?").join(",");
+    where.push(`author IN (${placeholders})`);
+    args.push(...filter.authors);
+  }
   if (filter["#t"]?.length) {
     const placeholders = filter["#t"].map(() => "?").join(",");
-    where.push(`hashtag IN (${placeholders})`);
+    where.push(`event_id IN (SELECT DISTINCT event_id FROM video_hashtags WHERE hashtag IN (${placeholders}))`);
     args.push(...filter["#t"]);
+  }
+  if (filter["#p"]?.length) {
+    const placeholders = filter["#p"].map(() => "?").join(",");
+    where.push(`event_id IN (SELECT event_id FROM video_mentions WHERE pubkey IN (${placeholders}))`);
+    args.push(...filter["#p"]);
+  }
+  if (filter["#e"]?.length) {
+    const placeholders = filter["#e"].map(() => "?").join(",");
+    where.push(`event_id IN (SELECT event_id FROM video_references WHERE referenced_event_id IN (${placeholders}))`);
+    args.push(...filter["#e"]);
+  }
+  if (filter["#a"]?.length) {
+    const placeholders = filter["#a"].map(() => "?").join(",");
+    where.push(`event_id IN (SELECT event_id FROM video_addresses WHERE address IN (${placeholders}))`);
+    args.push(...filter["#a"]);
+  }
+  if (filter.verification?.length) {
+    const placeholders = filter.verification.map(() => "?").join(",");
+    where.push(`verification_level IN (${placeholders})`);
+    args.push(...filter.verification);
   }
   for (const [key, comparison] of Object.entries(filter)) {
     if (!key.startsWith("int#"))
@@ -5664,7 +7253,8 @@ async function buildVideoQuery(filter, cursorSecret, previousCursorSecret) {
   const fetchLimit = limit + 1;
   const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
   const sql = `
-    SELECT event_id, author, created_at, loop_count, likes, views, comments, reposts, avg_completion, hashtag
+    SELECT event_id, author, created_at, loop_count, likes, views, comments, reposts, avg_completion, hashtag,
+           verification_level, has_proofmode, has_device_attestation, has_pgp_signature
     FROM videos
     ${whereClause}
     ${cursorClause}
@@ -5988,7 +7578,12 @@ var _RelayWebSocket = class _RelayWebSocket {
     console.log(`New WebSocket session: ${sessionId} on DO ${this.doName}`);
     return new Response(null, {
       status: 101,
-      webSocket: client
+      webSocket: client,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET",
+        "Access-Control-Allow-Headers": "Content-Type, Upgrade, Connection, Sec-WebSocket-Key, Sec-WebSocket-Version"
+      }
     });
   }
   // WebSocket Hibernation API handler methods
@@ -6379,6 +7974,108 @@ var _RelayWebSocket = class _RelayWebSocket {
           throw error;
         }
       } else {
+        const searchFilter = filters.find((f) => f.search);
+        if (searchFilter && searchFilter.search) {
+          const parsed = parseSearchQuery(searchFilter.search);
+          if (parsed.raw.includes("hashtag:")) {
+            const searchResults = await searchHashtags(
+              this.env.RELAY_DATABASE,
+              parsed,
+              searchFilter.limit || 50
+            );
+            for (const result2 of searchResults) {
+              this.sendEvent(session.webSocket, subscriptionId, result2.event);
+            }
+            this.sendEOSE(session.webSocket, subscriptionId);
+            return;
+          }
+          if (parsed.type === "user" || searchFilter.kinds?.includes(0)) {
+            const searchResults = await searchUsers(
+              this.env.RELAY_DATABASE,
+              parsed,
+              searchFilter.limit || 50
+            );
+            for (const result2 of searchResults) {
+              this.sendEvent(session.webSocket, subscriptionId, result2.event);
+            }
+            this.sendEOSE(session.webSocket, subscriptionId);
+            return;
+          }
+          if (parsed.type === "video" || searchFilter.kinds?.includes(34236)) {
+            const searchResults = await searchVideos(
+              this.env.RELAY_DATABASE,
+              parsed,
+              searchFilter.limit || 50
+            );
+            for (const result2 of searchResults) {
+              this.sendEvent(session.webSocket, subscriptionId, result2.event);
+            }
+            this.sendEOSE(session.webSocket, subscriptionId);
+            return;
+          }
+          if (parsed.type === "note" || searchFilter.kinds?.includes(1)) {
+            const searchResults = await searchNotes(
+              this.env.RELAY_DATABASE,
+              parsed,
+              searchFilter.limit || 50
+            );
+            for (const result2 of searchResults) {
+              this.sendEvent(session.webSocket, subscriptionId, result2.event);
+            }
+            this.sendEOSE(session.webSocket, subscriptionId);
+            return;
+          }
+          const listKinds = [3e4, 30001, 30002, 30003];
+          const hasListKind = searchFilter.kinds?.some((k) => listKinds.includes(k));
+          if (parsed.type === "list" || hasListKind) {
+            const searchResults = await searchLists(
+              this.env.RELAY_DATABASE,
+              parsed,
+              searchFilter.limit || 50
+            );
+            for (const result2 of searchResults) {
+              this.sendEvent(session.webSocket, subscriptionId, result2.event);
+            }
+            this.sendEOSE(session.webSocket, subscriptionId);
+            return;
+          }
+          if (parsed.type === "article" || searchFilter.kinds?.includes(30023)) {
+            const searchResults = await searchArticles(
+              this.env.RELAY_DATABASE,
+              parsed,
+              searchFilter.limit || 50
+            );
+            for (const result2 of searchResults) {
+              this.sendEvent(session.webSocket, subscriptionId, result2.event);
+            }
+            this.sendEOSE(session.webSocket, subscriptionId);
+            return;
+          }
+          if (parsed.type === "community" || searchFilter.kinds?.includes(34550)) {
+            const searchResults = await searchCommunities(
+              this.env.RELAY_DATABASE,
+              parsed,
+              searchFilter.limit || 50
+            );
+            for (const result2 of searchResults) {
+              this.sendEvent(session.webSocket, subscriptionId, result2.event);
+            }
+            this.sendEOSE(session.webSocket, subscriptionId);
+            return;
+          }
+          if (!parsed.type || parsed.type === "all") {
+            const searchResults = await searchUnified(
+              this.env.RELAY_DATABASE,
+              parsed,
+              searchFilter.limit || 50
+            );
+            for (const result2 of searchResults) {
+              this.sendEvent(session.webSocket, subscriptionId, result2.event);
+            }
+            this.sendEOSE(session.webSocket, subscriptionId);
+            return;
+          }
+        }
         const result = await this.getCachedOrQuery(filters, session.bookmark);
         if (result.bookmark) {
           session.bookmark = result.bookmark;

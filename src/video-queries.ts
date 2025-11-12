@@ -22,13 +22,21 @@ export interface IntComparison {
  */
 export interface VideoFilter {
   kinds?: number[];
+  authors?: string[];           // Author pubkey filter (OR logic)
   '#t'?: string[];              // Hashtag filter
+  '#p'?: string[];              // Pubkey mention filter (videos mentioning these pubkeys)
+  '#e'?: string[];              // Event reference filter (videos referencing these event IDs)
+  '#a'?: string[];              // Address filter (videos referencing these addressable events)
+  verification?: string[];      // ProofMode verification level filter (e.g., ['verified_mobile', 'verified_web'])
   'int#loop_count'?: IntComparison;
   'int#likes'?: IntComparison;
   'int#views'?: IntComparison;
   'int#comments'?: IntComparison;
   'int#reposts'?: IntComparison;
   'int#avg_completion'?: IntComparison;
+  'int#has_proofmode'?: IntComparison;
+  'int#has_device_attestation'?: IntComparison;
+  'int#has_pgp_signature'?: IntComparison;
   since?: number;
   until?: number;
   sort?: {
@@ -53,6 +61,10 @@ interface VideoRow {
   reposts: number;
   avg_completion: number;
   hashtag: string | null;
+  verification_level: string | null;
+  has_proofmode: number;
+  has_device_attestation: number;
+  has_pgp_signature: number;
 }
 
 /**
@@ -65,6 +77,11 @@ export function shouldUseVideosTable(filter: any): boolean {
 
   // Use videos table if any of these vendor extensions present:
   return (
+    !!filter.authors ||                                      // Author filtering
+    !!filter['#p'] ||                                        // Mention filtering
+    !!filter['#e'] ||                                        // Reference filtering
+    !!filter['#a'] ||                                        // Address filtering
+    !!filter.verification ||                                 // ProofMode verification level filtering
     Object.keys(filter).some(k => k.startsWith('int#')) ||  // Has int# filters
     (filter.sort && filter.sort.field !== 'created_at') ||   // Non-default sort
     !!filter.cursor                                          // Using pagination
@@ -131,11 +148,46 @@ export async function buildVideoQuery(
   const where: string[] = [];
   const args: any[] = [];
 
-  // Hashtag filtering (currently single hashtag in videos.hashtag)
+  // Author filtering (pubkey OR logic)
+  if (filter.authors?.length) {
+    const placeholders = filter.authors.map(() => '?').join(',');
+    where.push(`author IN (${placeholders})`);
+    args.push(...filter.authors);
+  }
+
+  // Hashtag filtering (using video_hashtags junction table for multi-hashtag support)
   if (filter['#t']?.length) {
     const placeholders = filter['#t'].map(() => '?').join(',');
-    where.push(`hashtag IN (${placeholders})`);
+    where.push(`event_id IN (SELECT DISTINCT event_id FROM video_hashtags WHERE hashtag IN (${placeholders}))`);
     args.push(...filter['#t']);
+  }
+
+  // Mention filtering (#p tags - pubkeys mentioned in video)
+  if (filter['#p']?.length) {
+    const placeholders = filter['#p'].map(() => '?').join(',');
+    where.push(`event_id IN (SELECT event_id FROM video_mentions WHERE pubkey IN (${placeholders}))`);
+    args.push(...filter['#p']);
+  }
+
+  // Reference filtering (#e tags - events referenced by video)
+  if (filter['#e']?.length) {
+    const placeholders = filter['#e'].map(() => '?').join(',');
+    where.push(`event_id IN (SELECT event_id FROM video_references WHERE referenced_event_id IN (${placeholders}))`);
+    args.push(...filter['#e']);
+  }
+
+  // Address filtering (#a tags - addressable events referenced by video)
+  if (filter['#a']?.length) {
+    const placeholders = filter['#a'].map(() => '?').join(',');
+    where.push(`event_id IN (SELECT event_id FROM video_addresses WHERE address IN (${placeholders}))`);
+    args.push(...filter['#a']);
+  }
+
+  // ProofMode verification level filtering
+  if (filter.verification?.length) {
+    const placeholders = filter.verification.map(() => '?').join(',');
+    where.push(`verification_level IN (${placeholders})`);
+    args.push(...filter.verification);
   }
 
   // Int# filters
@@ -216,7 +268,8 @@ export async function buildVideoQuery(
   const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
 
   const sql = `
-    SELECT event_id, author, created_at, loop_count, likes, views, comments, reposts, avg_completion, hashtag
+    SELECT event_id, author, created_at, loop_count, likes, views, comments, reposts, avg_completion, hashtag,
+           verification_level, has_proofmode, has_device_attestation, has_pgp_signature
     FROM videos
     ${whereClause}
     ${cursorClause}
