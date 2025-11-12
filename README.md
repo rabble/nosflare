@@ -26,7 +26,54 @@ Or, continue below to manually deploy Nosflare...
 
 ## Supported NIPs
 
-- Supports a range of [Nostr Improvement Proposals (NIPs)](https://github.com/fiatjaf/nostr/tree/master/nips), including NIPs 1, 2, 4, 5, 9, 11, 12, 15, 16, 17, 20, 22, 33, 40.
+- Supports a range of [Nostr Improvement Proposals (NIPs)](https://github.com/fiatjaf/nostr/tree/master/nips), including NIPs 1, 2, 4, 5, 9, 11, 12, 15, 16, 17, 20, 22, 33, 40, 50.
+
+## Search Capabilities (NIP-50)
+
+Nosflare provides comprehensive full-text search across multiple Nostr event types using SQLite's FTS5 engine with BM25 relevance ranking.
+
+### Supported Entity Types
+
+Search across 7 different entity types:
+
+- **Users** (kind 0): Search profiles by name, display name, about text, or NIP-05 address
+- **Videos** (kind 34236): Full-text search with engagement boosting (likes, loops)
+- **Notes** (kind 1): Search short-form content
+- **Lists** (kind 30000-30003): Find curated lists by name or description
+- **Articles** (kind 30023): Search long-form content
+- **Communities** (kind 34550): Find communities by name or description
+- **Hashtags** (all kinds): Prefix matching, autocomplete, and trending analysis
+
+### Query Features
+
+- **Prefix Matching**: Autocomplete-style search (e.g., "bitc" matches "bitcoin")
+- **Structured Queries**: Use filters like `type:video`, `#hashtag`, `min_likes:100`, `author:npub...`
+- **Time Ranges**: Filter by `since:` and `until:` timestamps
+- **Relevance Scoring**: BM25 algorithm with engagement boosting for videos
+- **Snippet Generation**: Highlighted excerpts showing matched terms
+- **Multi-Type Search**: Search across all entity types simultaneously
+- **Hashtag Autocomplete**: Real-time suggestions with trending scores
+
+### Example Queries
+
+```json
+// Search videos about bitcoin with minimum engagement
+{"kinds": [34236], "search": "#bitcoin tutorial min_likes:10"}
+
+// Find users by profile information
+{"kinds": [0], "search": "developer nostr"}
+
+// Search notes with time range
+{"kinds": [1], "search": "decentralization since:1704067200"}
+
+// Hashtag autocomplete
+{"search": "hashtag:bitc"}
+
+// Multi-type unified search
+{"search": "nostr protocol"}
+```
+
+For complete documentation on search features, query syntax, and API examples, see **[docs/SEARCH.md](/docs/SEARCH.md)**.
 
 ## Getting Started
 
@@ -199,7 +246,6 @@ Nosflare allows for "pay to relay", which lets the relay operator accept Bitcoin
 
 The current release of Nosflare is primarily focused on [basic protocol flow](https://github.com/nostr-protocol/nips/blob/master/01.md) usage. This ensures events are stored and retrieved very quickly. However, the following is a non-exhaustive list of planned features:
 
-- [NIP-50](https://github.com/nostr-protocol/nips/blob/master/50.md) for full searchable text
 - [NIP-65](https://github.com/nostr-protocol/nips/blob/master/65.md) for replaceable events
 
 ## Recommended Cloudflare Settings
