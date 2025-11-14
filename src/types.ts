@@ -196,9 +196,12 @@ export interface QueryResult {
 export interface Env {
   RELAY_DATABASE: D1Database;
   RELAY_WEBSOCKET: DurableObjectNamespace;
+  METRICS_DO: DurableObjectNamespace;
   EVENT_ARCHIVE: R2Bucket;
   CURSOR_SECRET: string;
   CURSOR_SECRET_PREVIOUS?: string; // For secret rotation
+  METRICS_USERNAME?: string;
+  METRICS_PASSWORD?: string;
 }
 
 // Durable Object types

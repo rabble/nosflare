@@ -4,6 +4,8 @@ import * as config from './config';
 import { RelayWebSocket } from './durable-object';
 import { runMigrations } from './migrations';
 import { indexUserProfile, indexHashtags, indexVideo, indexNote, indexList, indexArticle, indexCommunity } from './search';
+import { MetricsTracker } from './metrics-tracker';
+import { metricsToPrometheus } from './metrics-do';
 
 // Import config values
 const {
@@ -3261,6 +3263,89 @@ function handleNIP05Request(url: URL): Response {
   });
 }
 
+/**
+ * Handle /metrics endpoint with Basic authentication
+ * Returns Prometheus exposition format metrics
+ */
+async function handleMetricsRequest(request: Request, env: Env): Promise<Response> {
+  // Check Basic Auth
+  const authHeader = request.headers.get('Authorization');
+  
+  // Get credentials from environment (configurable)
+  const username = env.METRICS_USERNAME || 'metrics';
+  const password = env.METRICS_PASSWORD || '';
+  
+  // If password is not set, require authentication but reject all attempts
+  if (!password) {
+    return new Response('Metrics endpoint not configured. Set METRICS_PASSWORD environment variable.', {
+      status: 503,
+      headers: { 'Content-Type': 'text/plain' }
+    });
+  }
+  
+  if (!authHeader || !authHeader.startsWith('Basic ')) {
+    return new Response('Unauthorized', {
+      status: 401,
+      headers: {
+        'WWW-Authenticate': 'Basic realm="Metrics"',
+        'Content-Type': 'text/plain'
+      }
+    });
+  }
+  
+  // Decode and verify credentials
+  try {
+    const base64Credentials = authHeader.slice(6); // Remove 'Basic '
+    const credentials = atob(base64Credentials);
+    const [providedUsername, providedPassword] = credentials.split(':');
+    
+    if (providedUsername !== username || providedPassword !== password) {
+      return new Response('Unauthorized', {
+        status: 401,
+        headers: {
+          'WWW-Authenticate': 'Basic realm="Metrics"',
+          'Content-Type': 'text/plain'
+        }
+      });
+    }
+  } catch (error) {
+    return new Response('Invalid authorization header', {
+      status: 400,
+      headers: { 'Content-Type': 'text/plain' }
+    });
+  }
+  
+  // Fetch metrics from MetricsDO
+  try {
+    const tracker = new MetricsTracker(env);
+    const metrics = await tracker.getMetrics();
+    
+    if (!metrics) {
+      return new Response('# No metrics available\n', {
+        status: 200,
+        headers: { 'Content-Type': 'text/plain; version=0.0.4' }
+      });
+    }
+    
+    // Convert to Prometheus format
+    const prometheusFormat = metricsToPrometheus(metrics);
+    
+    return new Response(prometheusFormat, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/plain; version=0.0.4',
+        'Cache-Control': 'no-cache, no-store, must-revalidate'
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching metrics:', error);
+    return new Response('Internal server error', {
+      status: 500,
+      headers: { 'Content-Type': 'text/plain' }
+    });
+  }
+}
+
 async function handleCheckPayment(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const pubkey = url.searchParams.get('pubkey');
@@ -3559,6 +3644,8 @@ export default {
         }
       } else if (url.pathname === "/.well-known/nostr.json") {
         return handleNIP05Request(url);
+      } else if (url.pathname === "/metrics") {
+        return await handleMetricsRequest(request, env);
       } else if (url.pathname === "/favicon.ico") {
         return await serveFavicon();
       } else if (url.pathname === "/docs") {

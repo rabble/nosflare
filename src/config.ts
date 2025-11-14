@@ -11,6 +11,12 @@ export const relayNpub = "npub16jdfqgazrkapk0yrqm9rdxlnys7ck39c7zmdzxtxqlmmpxg04
 export const PAY_TO_RELAY_ENABLED = false; // Set to false to disable pay to relay
 export const RELAY_ACCESS_PRICE_SATS = 2121; // Price in SATS for relay access
 
+// Metrics endpoint configuration
+// Set METRICS_USERNAME and METRICS_PASSWORD as environment variables in wrangler.toml
+// or in the Cloudflare dashboard under Settings > Variables
+// The /metrics endpoint uses HTTP Basic Authentication
+// Example: curl -u metrics:yourpassword https://relay.divine.video/metrics
+
 // Function to get environment-specific relay info
 export function getRelayInfo(env: Env): RelayInfo {
   const isStaging = env.ENVIRONMENT === 'staging';

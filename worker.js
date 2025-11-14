@@ -3765,6 +3765,238 @@ async function searchUnified(db, query, limit) {
 }
 __name(searchUnified, "searchUnified");
 
+// src/metrics-tracker.ts
+var _MetricsTracker = class _MetricsTracker {
+  constructor(env) {
+    this.metricsStub = null;
+    this.env = env;
+  }
+  /**
+   * Get or create the metrics DO stub
+   */
+  getMetricsStub() {
+    if (!this.metricsStub) {
+      const id = this.env.METRICS_DO.idFromName("global-metrics");
+      this.metricsStub = this.env.METRICS_DO.get(id);
+    }
+    return this.metricsStub;
+  }
+  /**
+   * Track a client message (REQ, EVENT, CLOSE, etc.)
+   */
+  async trackClientMessage(verb, count = 1) {
+    try {
+      const stub = this.getMetricsStub();
+      await stub.fetch("https://metrics-do/increment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "client",
+          label: verb,
+          value: count
+        })
+      });
+    } catch (error) {
+      console.error("Failed to track client message:", error);
+    }
+  }
+  /**
+   * Track a relay message (EVENT, EOSE, OK, NOTICE, CLOSED)
+   */
+  async trackRelayMessage(verb, count = 1) {
+    try {
+      const stub = this.getMetricsStub();
+      await stub.fetch("https://metrics-do/increment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "relay",
+          label: verb,
+          value: count
+        })
+      });
+    } catch (error) {
+      console.error("Failed to track relay message:", error);
+    }
+  }
+  /**
+   * Track an event by kind
+   */
+  async trackEvent(kind, count = 1) {
+    try {
+      const stub = this.getMetricsStub();
+      await stub.fetch("https://metrics-do/increment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "event",
+          label: kind,
+          value: count
+        })
+      });
+    } catch (error) {
+      console.error("Failed to track event:", error);
+    }
+  }
+  /**
+   * Get current metrics data
+   */
+  async getMetrics() {
+    try {
+      const stub = this.getMetricsStub();
+      const response = await stub.fetch("https://metrics-do/get");
+      return await response.json();
+    } catch (error) {
+      console.error("Failed to get metrics:", error);
+      return null;
+    }
+  }
+  /**
+   * Reset all metrics (useful for testing)
+   */
+  async resetMetrics() {
+    try {
+      const stub = this.getMetricsStub();
+      await stub.fetch("https://metrics-do/reset", {
+        method: "POST"
+      });
+    } catch (error) {
+      console.error("Failed to reset metrics:", error);
+    }
+  }
+};
+__name(_MetricsTracker, "MetricsTracker");
+var MetricsTracker = _MetricsTracker;
+function trackMetricAsync(env, type, label, count = 1) {
+  const tracker = new MetricsTracker(env);
+  switch (type) {
+    case "client":
+      tracker.trackClientMessage(label, count).catch(
+        (e) => console.error("Async client metric failed:", e)
+      );
+      break;
+    case "relay":
+      tracker.trackRelayMessage(label, count).catch(
+        (e) => console.error("Async relay metric failed:", e)
+      );
+      break;
+    case "event":
+      tracker.trackEvent(label, count).catch(
+        (e) => console.error("Async event metric failed:", e)
+      );
+      break;
+  }
+}
+__name(trackMetricAsync, "trackMetricAsync");
+
+// src/metrics-do.ts
+var _MetricsDO = class _MetricsDO {
+  constructor(state) {
+    this.initialized = false;
+    this.state = state;
+    this.metrics = {
+      clientMessages: {},
+      relayMessages: {},
+      eventsByKind: {},
+      lastUpdate: Date.now()
+    };
+  }
+  async fetch(request) {
+    if (!this.initialized) {
+      await this.loadMetrics();
+      this.initialized = true;
+    }
+    const url = new URL(request.url);
+    if (url.pathname === "/increment") {
+      return await this.handleIncrement(request);
+    } else if (url.pathname === "/get") {
+      return await this.handleGet(request);
+    } else if (url.pathname === "/reset") {
+      return await this.handleReset(request);
+    } else {
+      return new Response("Not found", { status: 404 });
+    }
+  }
+  async loadMetrics() {
+    const stored = await this.state.storage.get("metrics");
+    if (stored) {
+      this.metrics = stored;
+    }
+  }
+  async saveMetrics() {
+    this.metrics.lastUpdate = Date.now();
+    await this.state.storage.put("metrics", this.metrics);
+  }
+  async handleIncrement(request) {
+    if (request.method !== "POST") {
+      return new Response("Method not allowed", { status: 405 });
+    }
+    try {
+      const body = await request.json();
+      const incrementValue = body.value || 1;
+      switch (body.type) {
+        case "client":
+          const clientLabel = body.label;
+          this.metrics.clientMessages[clientLabel] = (this.metrics.clientMessages[clientLabel] || 0) + incrementValue;
+          break;
+        case "relay":
+          const relayLabel = body.label;
+          this.metrics.relayMessages[relayLabel] = (this.metrics.relayMessages[relayLabel] || 0) + incrementValue;
+          break;
+        case "event":
+          const kind = body.label;
+          this.metrics.eventsByKind[kind] = (this.metrics.eventsByKind[kind] || 0) + incrementValue;
+          break;
+        default:
+          return new Response("Invalid metric type", { status: 400 });
+      }
+      await this.saveMetrics();
+      return new Response("OK", { status: 200 });
+    } catch (error) {
+      console.error("Error incrementing metric:", error);
+      return new Response("Internal server error", { status: 500 });
+    }
+  }
+  async handleGet(request) {
+    return Response.json(this.metrics);
+  }
+  async handleReset(request) {
+    if (request.method !== "POST") {
+      return new Response("Method not allowed", { status: 405 });
+    }
+    this.metrics = {
+      clientMessages: {},
+      relayMessages: {},
+      eventsByKind: {},
+      lastUpdate: Date.now()
+    };
+    await this.saveMetrics();
+    return new Response("Metrics reset", { status: 200 });
+  }
+};
+__name(_MetricsDO, "MetricsDO");
+var MetricsDO = _MetricsDO;
+function metricsToPrometheus(metrics) {
+  const lines = [];
+  lines.push("# HELP divine_nostr_client_messages_total Total number of client messages by verb");
+  lines.push("# TYPE divine_nostr_client_messages_total counter");
+  for (const [verb, count] of Object.entries(metrics.clientMessages)) {
+    lines.push(`divine_nostr_client_messages_total{verb="${verb}"} ${count}`);
+  }
+  lines.push("# HELP divine_nostr_relay_messages_total Total number of relay messages by verb");
+  lines.push("# TYPE divine_nostr_relay_messages_total counter");
+  for (const [verb, count] of Object.entries(metrics.relayMessages)) {
+    lines.push(`divine_nostr_relay_messages_total{verb="${verb}"} ${count}`);
+  }
+  lines.push("# HELP divine_nostr_events_total Total number of events by kind");
+  lines.push("# TYPE divine_nostr_events_total counter");
+  for (const [kind, count] of Object.entries(metrics.eventsByKind)) {
+    lines.push(`divine_nostr_events_total{kind="${kind}"} ${count}`);
+  }
+  return lines.join("\n") + "\n";
+}
+__name(metricsToPrometheus, "metricsToPrometheus");
+
 // src/relay-worker.ts
 var {
   relayInfo: relayInfo2,
@@ -6515,6 +6747,70 @@ function handleNIP05Request(url) {
   });
 }
 __name(handleNIP05Request, "handleNIP05Request");
+async function handleMetricsRequest(request, env) {
+  const authHeader = request.headers.get("Authorization");
+  const username = env.METRICS_USERNAME || "metrics";
+  const password = env.METRICS_PASSWORD || "";
+  if (!password) {
+    return new Response("Metrics endpoint not configured. Set METRICS_PASSWORD environment variable.", {
+      status: 503,
+      headers: { "Content-Type": "text/plain" }
+    });
+  }
+  if (!authHeader || !authHeader.startsWith("Basic ")) {
+    return new Response("Unauthorized", {
+      status: 401,
+      headers: {
+        "WWW-Authenticate": 'Basic realm="Metrics"',
+        "Content-Type": "text/plain"
+      }
+    });
+  }
+  try {
+    const base64Credentials = authHeader.slice(6);
+    const credentials = atob(base64Credentials);
+    const [providedUsername, providedPassword] = credentials.split(":");
+    if (providedUsername !== username || providedPassword !== password) {
+      return new Response("Unauthorized", {
+        status: 401,
+        headers: {
+          "WWW-Authenticate": 'Basic realm="Metrics"',
+          "Content-Type": "text/plain"
+        }
+      });
+    }
+  } catch (error) {
+    return new Response("Invalid authorization header", {
+      status: 400,
+      headers: { "Content-Type": "text/plain" }
+    });
+  }
+  try {
+    const tracker = new MetricsTracker(env);
+    const metrics = await tracker.getMetrics();
+    if (!metrics) {
+      return new Response("# No metrics available\n", {
+        status: 200,
+        headers: { "Content-Type": "text/plain; version=0.0.4" }
+      });
+    }
+    const prometheusFormat = metricsToPrometheus(metrics);
+    return new Response(prometheusFormat, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/plain; version=0.0.4",
+        "Cache-Control": "no-cache, no-store, must-revalidate"
+      }
+    });
+  } catch (error) {
+    console.error("Error fetching metrics:", error);
+    return new Response("Internal server error", {
+      status: 500,
+      headers: { "Content-Type": "text/plain" }
+    });
+  }
+}
+__name(handleMetricsRequest, "handleMetricsRequest");
 async function handleCheckPayment(request, env) {
   const url = new URL(request.url);
   const pubkey = url.searchParams.get("pubkey");
@@ -6940,6 +7236,8 @@ var relay_worker_default = {
         }
       } else if (url.pathname === "/.well-known/nostr.json") {
         return handleNIP05Request(url);
+      } else if (url.pathname === "/metrics") {
+        return await handleMetricsRequest(request, env);
       } else if (url.pathname === "/favicon.ico") {
         return await serveFavicon();
       } else if (url.pathname === "/docs") {
@@ -7686,6 +7984,7 @@ var _RelayWebSocket = class _RelayWebSocket {
       return;
     }
     const [type, ...args] = message;
+    trackMetricAsync(this.env, "client", type);
     try {
       switch (type) {
         case "EVENT":
@@ -7759,6 +8058,7 @@ var _RelayWebSocket = class _RelayWebSocket {
       }
       const result = await processEvent(event, session.id, this.env);
       if (result.success) {
+        trackMetricAsync(this.env, "event", event.kind);
         this.sendOK(session.webSocket, event.id, true, result.message);
         this.processedEvents.set(event.id, Date.now());
         this.invalidateRelevantCaches(event);
@@ -8219,6 +8519,7 @@ var _RelayWebSocket = class _RelayWebSocket {
     try {
       const okMessage = ["OK", eventId, status, message || ""];
       ws.send(JSON.stringify(okMessage));
+      trackMetricAsync(this.env, "relay", "OK");
     } catch (error) {
       console.error("Error sending OK:", error);
     }
@@ -8227,6 +8528,7 @@ var _RelayWebSocket = class _RelayWebSocket {
     try {
       const noticeMessage = ["NOTICE", message];
       ws.send(JSON.stringify(noticeMessage));
+      trackMetricAsync(this.env, "relay", "NOTICE");
     } catch (error) {
       console.error("Error sending NOTICE:", error);
     }
@@ -8235,6 +8537,7 @@ var _RelayWebSocket = class _RelayWebSocket {
     try {
       const eoseMessage = ["EOSE", subscriptionId];
       ws.send(JSON.stringify(eoseMessage));
+      trackMetricAsync(this.env, "relay", "EOSE");
     } catch (error) {
       console.error("Error sending EOSE:", error);
     }
@@ -8243,6 +8546,7 @@ var _RelayWebSocket = class _RelayWebSocket {
     try {
       const closedMessage = ["CLOSED", subscriptionId, message];
       ws.send(JSON.stringify(closedMessage));
+      trackMetricAsync(this.env, "relay", "CLOSED");
     } catch (error) {
       console.error("Error sending CLOSED:", error);
     }
@@ -8251,6 +8555,7 @@ var _RelayWebSocket = class _RelayWebSocket {
     try {
       const eventMessage = ["EVENT", subscriptionId, event];
       ws.send(JSON.stringify(eventMessage));
+      trackMetricAsync(this.env, "relay", "EVENT");
     } catch (error) {
       console.error("Error sending EVENT:", error);
     }
@@ -8308,6 +8613,7 @@ _RelayWebSocket.ENDPOINT_HINTS = {
 };
 var RelayWebSocket = _RelayWebSocket;
 export {
+  MetricsDO,
   RelayWebSocket,
   relay_worker_default as default
 };
