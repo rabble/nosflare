@@ -16,6 +16,7 @@ import type { VideoFilter, IntComparison } from './video-queries';
 import { metricsCollector } from './query-metrics';
 import { searchUsers, searchHashtags, searchVideos, searchNotes, searchLists, searchArticles, searchCommunities, searchUnified } from './search';
 import { parseSearchQuery } from './search-parser';
+import { NostrMetrics } from './nostr-metrics';
 
 // Session attachment data structure
 interface SessionAttachment {
@@ -55,6 +56,9 @@ export class RelayWebSocket implements DurableObject {
   // Payment status cache
   private paymentCache: Map<string, PaymentCacheEntry> = new Map();
   private readonly PAYMENT_CACHE_TTL = 60000;
+
+  // Metrics collector
+  private metrics: NostrMetrics;
 
   // Vendor extension limits (Phase 1: divine_extensions)
   private static readonly MAX_LIMIT = 200;
@@ -98,6 +102,7 @@ export class RelayWebSocket implements DurableObject {
     this.processedEvents = new Map();
     this.queryCache = new Map();
     this.paymentCache = new Map();
+    this.metrics = new NostrMetrics(env);
   }
 
   // Storage helper methods for subscriptions
@@ -273,6 +278,9 @@ export class RelayWebSocket implements DurableObject {
     // Use hibernatable WebSocket accept
     this.state.acceptWebSocket(server);
 
+    // Record connection metric
+    this.metrics.recordConnection('connected', this.region);
+
     console.log(`New WebSocket session: ${sessionId} on DO ${this.doName}`);
 
     return new Response(null, {
@@ -357,6 +365,9 @@ export class RelayWebSocket implements DurableObject {
       console.log(`WebSocket closed: ${attachment.sessionId} on DO ${this.doName}`);
       this.sessions.delete(attachment.sessionId);
 
+      // Record disconnection metric
+      this.metrics.recordConnection('disconnected', this.region);
+
       // Clean up stored subscriptions
       await this.deleteSubscriptions(attachment.sessionId);
     }
@@ -367,6 +378,9 @@ export class RelayWebSocket implements DurableObject {
     if (attachment) {
       console.error(`WebSocket error for session ${attachment.sessionId}:`, error);
       this.sessions.delete(attachment.sessionId);
+
+      // Record error metric
+      this.metrics.recordConnection('error', this.region);
     }
   }
 
@@ -415,6 +429,11 @@ export class RelayWebSocket implements DurableObject {
     }
 
     const [type, ...args] = message;
+
+    // Record client message metric
+    if (['EVENT', 'REQ', 'CLOSE', 'AUTH', 'COUNT'].includes(type)) {
+      this.metrics.recordClientMessage(type as any);
+    }
 
     try {
       switch (type) {
@@ -466,6 +485,8 @@ export class RelayWebSocket implements DurableObject {
       const isValidSignature = await verifyEventSignature(event);
       if (!isValidSignature) {
         console.error(`Signature verification failed for event ${event.id}`);
+        this.metrics.recordEventKind(event.kind, false, 'invalid_signature');
+        this.metrics.recordRejection('invalid_signature', event.kind, event.pubkey);
         this.sendOK(session.webSocket, event.id, false, 'invalid: signature verification failed');
         return;
       }
@@ -474,6 +495,7 @@ export class RelayWebSocket implements DurableObject {
       if (PAY_TO_RELAY_ENABLED) {
         // Check cache first
         let hasPaid = await this.getCachedPaymentStatus(event.pubkey);
+        const fromCache = hasPaid !== null;
         
         if (hasPaid === null) {
           // Not in cache, check database
@@ -482,10 +504,15 @@ export class RelayWebSocket implements DurableObject {
           this.setCachedPaymentStatus(event.pubkey, hasPaid);
         }
         
+        // Record payment check metric
+        this.metrics.recordPaymentCheck(hasPaid, fromCache);
+        
         if (!hasPaid) {
           const protocol = 'https:';
           const relayUrl = `${protocol}//${session.host}`;
           console.error(`Event denied. Pubkey ${event.pubkey} has not paid for relay access.`);
+          this.metrics.recordEventKind(event.kind, false, 'payment_required');
+          this.metrics.recordRejection('payment_required', event.kind, event.pubkey);
           this.sendOK(session.webSocket, event.id, false, `blocked: payment required. Visit ${relayUrl} to pay for relay access.`);
           return;
         }
@@ -494,6 +521,8 @@ export class RelayWebSocket implements DurableObject {
       // Check if pubkey is allowed (bypassed for kind 1059)
       if (event.kind !== 1059 && !isPubkeyAllowed(event.pubkey)) {
         console.error(`Event denied. Pubkey ${event.pubkey} is not allowed.`);
+        this.metrics.recordEventKind(event.kind, false, 'pubkey_blocked');
+        this.metrics.recordRejection('pubkey_blocked', event.kind, event.pubkey);
         this.sendOK(session.webSocket, event.id, false, 'blocked: pubkey not allowed');
         return;
       }
@@ -501,6 +530,8 @@ export class RelayWebSocket implements DurableObject {
       // Check if event kind is allowed
       if (!isEventKindAllowed(event.kind)) {
         console.error(`Event denied. Event kind ${event.kind} is not allowed.`);
+        this.metrics.recordEventKind(event.kind, false, 'kind_blocked');
+        this.metrics.recordRejection('kind_blocked', event.kind, event.pubkey);
         this.sendOK(session.webSocket, event.id, false, `blocked: event kind ${event.kind} not allowed`);
         return;
       }
@@ -508,6 +539,8 @@ export class RelayWebSocket implements DurableObject {
       // Check for blocked content
       if (containsBlockedContent(event)) {
         console.error('Event denied. Content contains blocked phrases.');
+        this.metrics.recordEventKind(event.kind, false, 'content_blocked');
+        this.metrics.recordRejection('content_blocked', event.kind, event.pubkey);
         this.sendOK(session.webSocket, event.id, false, 'blocked: content contains blocked phrases');
         return;
       }
@@ -516,6 +549,8 @@ export class RelayWebSocket implements DurableObject {
       for (const tag of event.tags) {
         if (!isTagAllowed(tag[0])) {
           console.error(`Event denied. Tag '${tag[0]}' is not allowed.`);
+          this.metrics.recordEventKind(event.kind, false, 'tag_blocked');
+          this.metrics.recordRejection('tag_blocked', event.kind, event.pubkey);
           this.sendOK(session.webSocket, event.id, false, `blocked: tag '${tag[0]}' not allowed`);
           return;
         }
@@ -525,6 +560,9 @@ export class RelayWebSocket implements DurableObject {
       const result = await processEvent(event, session.id, this.env);
 
       if (result.success) {
+        // Record successful event submission
+        this.metrics.recordEventKind(event.kind, true);
+        
         // Send OK to the sender
         this.sendOK(session.webSocket, event.id, true, result.message);
 
@@ -538,6 +576,9 @@ export class RelayWebSocket implements DurableObject {
         console.log(`DO ${this.doName} broadcasting event ${event.id}`);
         await this.broadcastEvent(event);
       } else {
+        // Record rejection (likely duplicate or other database error)
+        this.metrics.recordEventKind(event.kind, false, 'duplicate');
+        this.metrics.recordRejection('duplicate', event.kind, event.pubkey);
         this.sendOK(session.webSocket, event.id, false, result.message);
       }
 
@@ -717,6 +758,13 @@ export class RelayWebSocket implements DurableObject {
     // Save to storage
     await this.saveSubscriptions(session.id, session.subscriptions);
 
+    // Record subscription metrics
+    const hasAuthors = filters.some(f => f.authors && f.authors.length > 0);
+    const hasKinds = filters.some(f => f.kinds && f.kinds.length > 0);
+    const hasHashtags = filters.some(f => Object.keys(f).some(k => k.startsWith('#')));
+    const hasSearch = filters.some(f => f.search);
+    this.metrics.recordSubscription(filters.length, hasAuthors, hasKinds, hasHashtags, hasSearch);
+
     console.log(`New subscription ${subscriptionId} for session ${session.id} on DO ${this.doName}`);
 
     try {
@@ -773,6 +821,9 @@ export class RelayWebSocket implements DurableObject {
             cursorRejected: false,
             timestamp: Math.floor(Date.now() / 1000)
           });
+          
+          // Record Nostr metrics
+          this.metrics.recordQueryPerformance(latencyMs, events.length, false, 'video');
 
           // Send EOSE
           this.sendEOSE(session.webSocket, subscriptionId);
@@ -802,11 +853,16 @@ export class RelayWebSocket implements DurableObject {
 
           // Hashtag search: hashtag:#prefix
           if (parsed.raw.includes('hashtag:')) {
+            const searchStart = Date.now();
             const searchResults = await searchHashtags(
               this.env.RELAY_DATABASE,
               parsed,
               searchFilter.limit || 50
             );
+            const searchLatency = Date.now() - searchStart;
+
+            // Record search metrics
+            this.metrics.recordSearch('hashtag', searchResults.length, searchLatency);
 
             // Send search results
             for (const result of searchResults) {
@@ -820,11 +876,14 @@ export class RelayWebSocket implements DurableObject {
 
           // User search: type:user or kind 0
           if (parsed.type === 'user' || searchFilter.kinds?.includes(0)) {
+            const searchStart = Date.now();
             const searchResults = await searchUsers(
               this.env.RELAY_DATABASE,
               parsed,
               searchFilter.limit || 50
             );
+            const searchLatency = Date.now() - searchStart;
+            this.metrics.recordSearch('user', searchResults.length, searchLatency);
 
             // Send search results
             for (const result of searchResults) {
@@ -838,11 +897,14 @@ export class RelayWebSocket implements DurableObject {
 
           // Video search: type:video or kind 34236
           if (parsed.type === 'video' || searchFilter.kinds?.includes(34236)) {
+            const searchStart = Date.now();
             const searchResults = await searchVideos(
               this.env.RELAY_DATABASE,
               parsed,
               searchFilter.limit || 50
             );
+            const searchLatency = Date.now() - searchStart;
+            this.metrics.recordSearch('video', searchResults.length, searchLatency);
 
             // Send search results
             for (const result of searchResults) {
@@ -856,11 +918,14 @@ export class RelayWebSocket implements DurableObject {
 
           // Note search: type:note or kind 1
           if (parsed.type === 'note' || searchFilter.kinds?.includes(1)) {
+            const searchStart = Date.now();
             const searchResults = await searchNotes(
               this.env.RELAY_DATABASE,
               parsed,
               searchFilter.limit || 50
             );
+            const searchLatency = Date.now() - searchStart;
+            this.metrics.recordSearch('note', searchResults.length, searchLatency);
 
             // Send search results
             for (const result of searchResults) {
@@ -876,11 +941,14 @@ export class RelayWebSocket implements DurableObject {
           const listKinds = [30000, 30001, 30002, 30003];
           const hasListKind = searchFilter.kinds?.some(k => listKinds.includes(k));
           if (parsed.type === 'list' || hasListKind) {
+            const searchStart = Date.now();
             const searchResults = await searchLists(
               this.env.RELAY_DATABASE,
               parsed,
               searchFilter.limit || 50
             );
+            const searchLatency = Date.now() - searchStart;
+            this.metrics.recordSearch('list', searchResults.length, searchLatency);
 
             // Send search results
             for (const result of searchResults) {
@@ -894,11 +962,14 @@ export class RelayWebSocket implements DurableObject {
 
           // Article search: type:article or kind 30023
           if (parsed.type === 'article' || searchFilter.kinds?.includes(30023)) {
+            const searchStart = Date.now();
             const searchResults = await searchArticles(
               this.env.RELAY_DATABASE,
               parsed,
               searchFilter.limit || 50
             );
+            const searchLatency = Date.now() - searchStart;
+            this.metrics.recordSearch('article', searchResults.length, searchLatency);
 
             // Send search results
             for (const result of searchResults) {
@@ -912,11 +983,14 @@ export class RelayWebSocket implements DurableObject {
 
           // Community search: type:community or kind 34550
           if (parsed.type === 'community' || searchFilter.kinds?.includes(34550)) {
+            const searchStart = Date.now();
             const searchResults = await searchCommunities(
               this.env.RELAY_DATABASE,
               parsed,
               searchFilter.limit || 50
             );
+            const searchLatency = Date.now() - searchStart;
+            this.metrics.recordSearch('community', searchResults.length, searchLatency);
 
             // Send search results
             for (const result of searchResults) {
@@ -931,11 +1005,14 @@ export class RelayWebSocket implements DurableObject {
           // Default: unified search across all entity types
           // When no type is specified or type='all'
           if (!parsed.type || parsed.type === 'all') {
+            const searchStart = Date.now();
             const searchResults = await searchUnified(
               this.env.RELAY_DATABASE,
               parsed,
               searchFilter.limit || 50
             );
+            const searchLatency = Date.now() - searchStart;
+            this.metrics.recordSearch('unified', searchResults.length, searchLatency);
 
             // Send search results
             for (const result of searchResults) {
@@ -1146,6 +1223,7 @@ export class RelayWebSocket implements DurableObject {
     try {
       const okMessage = ['OK', eventId, status, message || ''];
       ws.send(JSON.stringify(okMessage));
+      this.metrics.recordRelayMessage('OK');
     } catch (error) {
       console.error('Error sending OK:', error);
     }
@@ -1155,6 +1233,7 @@ export class RelayWebSocket implements DurableObject {
     try {
       const noticeMessage = ['NOTICE', message];
       ws.send(JSON.stringify(noticeMessage));
+      this.metrics.recordRelayMessage('NOTICE');
     } catch (error) {
       console.error('Error sending NOTICE:', error);
     }
@@ -1164,6 +1243,7 @@ export class RelayWebSocket implements DurableObject {
     try {
       const eoseMessage = ['EOSE', subscriptionId];
       ws.send(JSON.stringify(eoseMessage));
+      this.metrics.recordRelayMessage('EOSE');
     } catch (error) {
       console.error('Error sending EOSE:', error);
     }
@@ -1173,6 +1253,7 @@ export class RelayWebSocket implements DurableObject {
     try {
       const closedMessage = ['CLOSED', subscriptionId, message];
       ws.send(JSON.stringify(closedMessage));
+      this.metrics.recordRelayMessage('CLOSED');
     } catch (error) {
       console.error('Error sending CLOSED:', error);
     }
@@ -1182,6 +1263,7 @@ export class RelayWebSocket implements DurableObject {
     try {
       const eventMessage = ['EVENT', subscriptionId, event];
       ws.send(JSON.stringify(eventMessage));
+      this.metrics.recordRelayMessage('EVENT');
     } catch (error) {
       console.error('Error sending EVENT:', error);
     }
@@ -1193,6 +1275,7 @@ export class RelayWebSocket implements DurableObject {
       // Format: ["NOTICE", "VCURSOR", {"sub": "xyz", "cursor": "base64url..."}]
       const noticeMessage = ['NOTICE', 'VCURSOR', { sub: subscriptionId, cursor }];
       ws.send(JSON.stringify(noticeMessage));
+      this.metrics.recordRelayMessage('NOTICE');
     } catch (error) {
       console.error('Error sending VCURSOR:', error);
     }

@@ -197,8 +197,18 @@ export interface Env {
   RELAY_DATABASE: D1Database;
   RELAY_WEBSOCKET: DurableObjectNamespace;
   EVENT_ARCHIVE: R2Bucket;
+  ANALYTICS_ENGINE?: AnalyticsEngineDataset;
   CURSOR_SECRET: string;
   CURSOR_SECRET_PREVIOUS?: string; // For secret rotation
+}
+
+// Analytics Engine dataset interface
+export interface AnalyticsEngineDataset {
+  writeDataPoint(event: {
+    blobs?: string[];
+    doubles?: number[];
+    indexes?: string[];
+  }): void;
 }
 
 // Durable Object types

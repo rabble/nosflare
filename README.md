@@ -75,6 +75,45 @@ Search across 7 different entity types:
 
 For complete documentation on search features, query syntax, and API examples, see **[docs/SEARCH.md](/docs/SEARCH.md)**.
 
+## Observability & Metrics
+
+Nosflare includes comprehensive metrics tracking using **Cloudflare Analytics Engine** to monitor relay performance and usage patterns.
+
+### Tracked Metrics
+
+- **Client Messages**: EVENT, REQ, CLOSE, AUTH, COUNT
+- **Relay Messages**: OK, EVENT, EOSE, CLOSED, NOTICE
+- **Event Kinds**: Breakdown by kind with acceptance/rejection status
+- **Rejection Reasons**: Why events are being rejected (invalid signature, payment required, blocked content, etc.)
+- **Query Performance**: Latency, result counts, archive usage
+- **Search Metrics**: Performance by search type (user, video, note, etc.)
+- **Connections**: WebSocket lifecycle by region
+- **Payment Checks**: Pay-to-relay status and cache hit rates
+- **NIP-05 Validation**: Success rates by domain
+
+### Quick Start
+
+```bash
+# Test metrics after deployment
+./test-metrics.sh YOUR_ACCOUNT_ID YOUR_API_TOKEN
+
+# View in Cloudflare Dashboard
+# Go to Analytics & Logs → Workers Analytics → Analytics Engine
+```
+
+### Cost
+
+- **Free tier**: 10M events/month included
+- **Paid**: $0.25 per million events
+- **Small relay** (100 users): Free
+- **Medium relay** (1,000 users): ~$21/month
+- **Large relay** (10,000 users): ~$88/month
+
+For complete documentation, query examples, and GraphQL API usage, see:
+- **[docs/METRICS.md](/docs/METRICS.md)** - Full documentation
+- **[docs/METRICS_QUICK_REFERENCE.md](/docs/METRICS_QUICK_REFERENCE.md)** - Common queries
+- **[METRICS_IMPLEMENTATION.md](/METRICS_IMPLEMENTATION.md)** - Implementation details
+
 ## Getting Started
 
 ### Prerequisites

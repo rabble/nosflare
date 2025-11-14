@@ -20,6 +20,10 @@ database_id = "8beb11fa-ff53-462e-82a4-64a8a7db68a2"
 binding = "EVENT_ARCHIVE"
 bucket_name = "nostr-event-archive"
 
+# Analytics Engine binding for metrics
+[[analytics_engine_datasets]]
+binding = "ANALYTICS_ENGINE"
+
 # CPU limits (lower to 10 if not on paid Workers plan)
 [limits]
 cpu_ms = 30000
@@ -61,6 +65,10 @@ database_id = "c345a4fe-26ce-4056-a70b-0085bc3448e1"
 [[env.staging.r2_buckets]]
 binding = "EVENT_ARCHIVE"
 bucket_name = "nostr-event-archive-staging"
+
+# Staging Analytics Engine binding
+[[env.staging.analytics_engine_datasets]]
+binding = "ANALYTICS_ENGINE"
 
 # Staging environment variables
 [env.staging.vars]
