@@ -38,7 +38,9 @@ __export(config_exports, {
   PAY_TO_RELAY_ENABLED: () => PAY_TO_RELAY_ENABLED,
   PUBKEY_RATE_LIMIT: () => PUBKEY_RATE_LIMIT,
   RELAY_ACCESS_PRICE_SATS: () => RELAY_ACCESS_PRICE_SATS,
+  REQUIRE_CLIENT_TAG: () => REQUIRE_CLIENT_TAG,
   REQ_RATE_LIMIT: () => REQ_RATE_LIMIT,
+  allowedClientTags: () => allowedClientTags,
   allowedEventKinds: () => allowedEventKinds,
   allowedNip05Domains: () => allowedNip05Domains,
   allowedPubkeys: () => allowedPubkeys,
@@ -55,6 +57,7 @@ __export(config_exports, {
   enableGlobalDuplicateCheck: () => enableGlobalDuplicateCheck,
   excludedRateLimitKinds: () => excludedRateLimitKinds,
   getRelayInfo: () => getRelayInfo,
+  hasValidClientTag: () => hasValidClientTag,
   isEventKindAllowed: () => isEventKindAllowed,
   isPubkeyAllowed: () => isPubkeyAllowed,
   isTagAllowed: () => isTagAllowed,
@@ -74,7 +77,7 @@ function getRelayInfo(env) {
     contact: isStaging ? "staging@divine.video" : "relay@divine.video",
     supported_nips: [1, 2, 4, 5, 9, 11, 12, 15, 16, 17, 20, 22, 33, 40, 50],
     software: "https://github.com/Spl0itable/nosflare",
-    version: "7.4.11",
+    version: "7.4.12",
     icon: "https://divine.video/logo.png",
     // Relay limitations
     limitation: {
@@ -316,6 +319,13 @@ var allowedTags = /* @__PURE__ */ new Set([
   // "p", "e", "t"
   // ... tags that are explicitly allowed
 ]);
+var REQUIRE_CLIENT_TAG = true;
+var allowedClientTags = /* @__PURE__ */ new Set([
+  "divine.video",
+  "divine-web",
+  "divine",
+  "openvine"
+]);
 var PUBKEY_RATE_LIMIT = { rate: 10 / 6e4, capacity: 10 };
 var REQ_RATE_LIMIT = { rate: 50 / 6e4, capacity: 50 };
 var excludedRateLimitKinds = /* @__PURE__ */ new Set([
@@ -355,6 +365,21 @@ function isTagAllowed(tag) {
   return !blockedTags.has(tag);
 }
 __name(isTagAllowed, "isTagAllowed");
+function hasValidClientTag(event) {
+  if (!REQUIRE_CLIENT_TAG) {
+    return true;
+  }
+  const clientTag = event.tags.find((tag) => tag[0] === "client");
+  if (!clientTag) {
+    return false;
+  }
+  const clientValue = clientTag[1];
+  if (!clientValue) {
+    return false;
+  }
+  return allowedClientTags.has(clientValue);
+}
+__name(hasValidClientTag, "hasValidClientTag");
 
 // node_modules/@noble/hashes/esm/crypto.js
 var crypto2 = typeof globalThis === "object" && "crypto" in globalThis ? globalThis.crypto : void 0;
@@ -8057,6 +8082,11 @@ var _RelayWebSocket = class _RelayWebSocket {
       if (!isValidSignature) {
         console.error(`Signature verification failed for event ${event.id}`);
         this.sendOK(session.webSocket, event.id, false, "invalid: signature verification failed");
+        return;
+      }
+      if (!hasValidClientTag(event)) {
+        console.error(`Event denied. Invalid or missing client tag for event ${event.id}`);
+        this.sendOK(session.webSocket, event.id, false, "blocked: events may only be submitted through an official app");
         return;
       }
       if (PAY_TO_RELAY_ENABLED) {

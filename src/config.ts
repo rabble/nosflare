@@ -30,7 +30,7 @@ export function getRelayInfo(env: Env): RelayInfo {
     contact: isStaging ? "staging@divine.video" : "relay@divine.video",
     supported_nips: [1, 2, 4, 5, 9, 11, 12, 15, 16, 17, 20, 22, 33, 40, 50],
     software: "https://github.com/Spl0itable/nosflare",
-    version: "7.4.11",
+    version: "7.4.12",
     icon: "https://divine.video/logo.png",
 
     // Relay limitations
@@ -190,6 +190,16 @@ export const allowedTags = new Set<string>([
   // ... tags that are explicitly allowed
 ]);
 
+// Client tag validation
+// Events MUST have a "client" tag with one of these values to be accepted
+export const REQUIRE_CLIENT_TAG = true; // Set to false to disable client tag requirement
+export const allowedClientTags = new Set<string>([
+  "divine.video",
+  "divine-web",
+  "divine",
+  "openvine"
+]);
+
 // Rate limit thresholds
 export const PUBKEY_RATE_LIMIT = { rate: 10 / 60000, capacity: 10 }; // 10 EVENT messages per min
 export const REQ_RATE_LIMIT = { rate: 50 / 60000, capacity: 50 }; // 50 REQ messages per min
@@ -240,4 +250,26 @@ export function isTagAllowed(tag: string): boolean {
     return false;
   }
   return !blockedTags.has(tag);
+}
+
+export function hasValidClientTag(event: NostrEvent): boolean {
+  if (!REQUIRE_CLIENT_TAG) {
+    return true; // Client tag validation is disabled
+  }
+
+  // Find the client tag in the event
+  const clientTag = event.tags.find(tag => tag[0] === 'client');
+  
+  if (!clientTag) {
+    return false; // No client tag found
+  }
+
+  // Check if the client tag has a valid value (at position 1)
+  const clientValue = clientTag[1];
+  if (!clientValue) {
+    return false; // Client tag exists but has no value
+  }
+
+  // Check if the client value is in the allowed list
+  return allowedClientTags.has(clientValue);
 }
