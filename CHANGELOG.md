@@ -1,3 +1,31 @@
+## v7.4.12 - 2025-11-15
+
+Feature: Added client tag validation to ensure events only come from approved applications
+
+### New Features
+- ✨ **Client Tag Validation**: Events must now include a valid `client` tag to be accepted
+- 🔒 **Quality Control**: Only events from approved applications (divine.video, divine-web, divine, openvine) are accepted
+- ⚙️ **Configurable**: Can be disabled via `REQUIRE_CLIENT_TAG = false` in config
+- 📝 **User-Friendly Errors**: Rejected events receive message "events may only be submitted through an official app"
+
+### Configuration
+- Added `REQUIRE_CLIENT_TAG` boolean flag (default: `true`)
+- Added `allowedClientTags` Set with approved client identifiers
+- Added `hasValidClientTag()` validation function in config
+
+### Documentation
+- Added comprehensive client tag validation documentation in `docs/CLIENT_TAG_VALIDATION.md`
+- Added test script `test-client-tag-validation.cjs` for testing client tag validation
+- Updated README with client tag validation section
+
+### Implementation Details
+- Client tag validation occurs after signature verification but before other checks
+- Validates presence of `client` tag and checks value against allowlist
+- Generic error message to avoid revealing implementation details
+- Supports additional tag values beyond client identifier (e.g., version, platform)
+
+See [docs/CLIENT_TAG_VALIDATION.md](/docs/CLIENT_TAG_VALIDATION.md) for complete documentation.
+
 ## v7.4.11 - 2025-10-23
 
 Hotfix: lowered the archived event batch size

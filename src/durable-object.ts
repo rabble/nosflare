@@ -7,7 +7,8 @@ import {
   isEventKindAllowed,
   containsBlockedContent,
   isTagAllowed,
-  excludedRateLimitKinds
+  excludedRateLimitKinds,
+  hasValidClientTag
 } from './config';
 import { verifyEventSignature, hasPaidForRelay, processEvent, queryEventsWithArchive } from './relay-worker';
 import { validateSortField, validateIntColumn, getSortableFields, getIntFilterableFields } from './video-columns';
@@ -474,6 +475,13 @@ export class RelayWebSocket implements DurableObject {
       if (!isValidSignature) {
         console.error(`Signature verification failed for event ${event.id}`);
         this.sendOK(session.webSocket, event.id, false, 'invalid: signature verification failed');
+        return;
+      }
+
+      // Validate client tag
+      if (!hasValidClientTag(event)) {
+        console.error(`Event denied. Invalid or missing client tag for event ${event.id}`);
+        this.sendOK(session.webSocket, event.id, false, 'blocked: events may only be submitted through an official app');
         return;
       }
 
