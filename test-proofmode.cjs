@@ -4,7 +4,7 @@
 const WebSocket = require('ws');
 const crypto = require('crypto');
 
-const RELAY_URL = 'wss://relay.divine.video';
+const RELAY_URL = 'ws://localhost:8787';
 
 // Generate a test keypair
 function generateKeypair() {
@@ -253,6 +253,14 @@ async function runTests() {
   console.log(`\n  ✓ int#has_proofmode = 0: ${noProofmodeResults.length} results`);
   console.log(`    Expected: 2+ (unverified + old_vine_import + any existing videos without ProofMode)`);
 
+  const proofmodeVerifiedResults = await testIntFilter(ws, 'proofmode_verified', { eq: 1 });
+  console.log(`\n  ✓ int#proofmode_verified = 1: ${proofmodeVerifiedResults.length} results`);
+  console.log(`    Expected: 3 (verified_mobile, verified_web, basic_proof)`);
+
+  const proofmodeNotVerifiedResults = await testIntFilter(ws, 'proofmode_verified', { eq: 0 });
+  console.log(`\n  ✓ int#proofmode_verified = 0: ${proofmodeNotVerifiedResults.length} results`);
+  console.log(`    Expected: 2+ (unverified + old_vine_import + any existing videos without ProofMode)`);
+
   // Summary
   console.log('\n═══════════════════════════════════════════════════════');
   console.log('  TEST SUMMARY');
@@ -305,6 +313,22 @@ async function runTests() {
     console.log('  ✅ int#has_pgp_signature filtering: PASS');
   } else {
     console.log('  ❌ int#has_pgp_signature filtering: FAIL');
+    allPassed = false;
+  }
+
+  // Check proofmode_verified
+  if (proofmodeVerifiedResults.length >= 3) {
+    console.log('  ✅ int#proofmode_verified = 1 filtering: PASS');
+  } else {
+    console.log('  ❌ int#proofmode_verified = 1 filtering: FAIL');
+    allPassed = false;
+  }
+
+  // Check proofmode_not_verified
+  if (proofmodeNotVerifiedResults.length >= 2) {
+    console.log('  ✅ int#proofmode_verified = 0 filtering: PASS');
+  } else {
+    console.log('  ❌ int#proofmode_verified = 0 filtering: FAIL');
     allPassed = false;
   }
 

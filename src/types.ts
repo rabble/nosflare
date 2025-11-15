@@ -192,11 +192,18 @@ export interface QueryResult {
   bookmark: string | null;
 }
 
+// Search indexing message for async queue processing
+export interface SearchIndexMessage {
+  event: NostrEvent;
+  timestamp: number;
+}
+
 // Worker environment type
 export interface Env {
   RELAY_DATABASE: D1Database;
   RELAY_WEBSOCKET: DurableObjectNamespace;
   EVENT_ARCHIVE: R2Bucket;
+  SEARCH_INDEX_QUEUE: Queue<SearchIndexMessage>;
   CURSOR_SECRET: string;
   CURSOR_SECRET_PREVIOUS?: string; // For secret rotation
 }

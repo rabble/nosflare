@@ -20,6 +20,19 @@ database_id = "8beb11fa-ff53-462e-82a4-64a8a7db68a2"
 binding = "EVENT_ARCHIVE"
 bucket_name = "nostr-event-archive"
 
+# Queue binding for async FTS5 indexing
+[[queues.producers]]
+queue = "search-indexing-queue"
+binding = "SEARCH_INDEX_QUEUE"
+
+[[queues.consumers]]
+queue = "search-indexing-queue"
+max_batch_size = 100
+max_batch_timeout = 30
+max_retries = 3
+max_concurrency = 5
+dead_letter_queue = "search-indexing-dlq"
+
 # CPU limits (lower to 10 if not on paid Workers plan)
 [limits]
 cpu_ms = 30000

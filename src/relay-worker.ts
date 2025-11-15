@@ -1,5 +1,5 @@
 import { schnorr } from "@noble/curves/secp256k1";
-import { Env, NostrEvent, NostrFilter, QueryResult, NostrMessage, Nip05Response } from './types';
+import { Env, NostrEvent, NostrFilter, QueryResult, NostrMessage, Nip05Response, SearchIndexMessage } from './types';
 import * as config from './config';
 import { RelayWebSocket } from './durable-object';
 import { runMigrations } from './migrations';
@@ -791,38 +791,18 @@ async function saveEventToD1(event: NostrEvent, env: Env): Promise<{ success: bo
       }
     }
 
-    // Index user profile for search (kind 0)
-    if (event.kind === 0) {
-      await indexUserProfile(env.RELAY_DATABASE, event);
+    // Send event to search indexing queue for async processing
+    // This prevents FTS5 operations from blocking event writes
+    try {
+      const message: SearchIndexMessage = {
+        event: event,
+        timestamp: Date.now()
+      };
+      await env.SEARCH_INDEX_QUEUE.send(message);
+    } catch (error) {
+      console.error(`Failed to queue search indexing for event ${event.id}:`, error);
+      // Don't fail the event write if queue send fails
     }
-
-    // Index note for search (kind 1)
-    if (event.kind === 1) {
-      await indexNote(env.RELAY_DATABASE, event);
-    }
-
-    // Index video for search (kind 34236)
-    if (event.kind === 34236) {
-      await indexVideo(env.RELAY_DATABASE, event);
-    }
-
-    // Index lists for search (kinds 30000-30003)
-    if (event.kind >= 30000 && event.kind <= 30003) {
-      await indexList(env.RELAY_DATABASE, event);
-    }
-
-    // Index articles for search (kind 30023)
-    if (event.kind === 30023) {
-      await indexArticle(env.RELAY_DATABASE, event);
-    }
-
-    // Index communities for search (kind 34550)
-    if (event.kind === 34550) {
-      await indexCommunity(env.RELAY_DATABASE, event);
-    }
-
-    // Index hashtags for search (all event kinds with #t tags)
-    await indexHashtags(env.RELAY_DATABASE, event);
 
     console.log(`Event ${event.id} saved successfully to D1.`);
     return { success: true, message: "Event received successfully for processing" };
@@ -917,6 +897,15 @@ function chunkArray<T>(array: T[], chunkSize: number): T[][] {
   return chunks;
 }
 
+// Helper to detect discovery-style queries (no authors, no ids, no time range)
+// These should use created_timestamp (ingestion time) instead of created_at (event time)
+function isDiscoveryQuery(filter: NostrFilter): boolean {
+  const hasNoAuthors = !filter.authors || filter.authors.length === 0;
+  const hasNoIds = !filter.ids || filter.ids.length === 0;
+  const hasNoTimeRange = !filter.since && !filter.until;
+  return hasNoAuthors && hasNoIds && hasNoTimeRange;
+}
+
 // Query builder
 function buildQuery(filter: NostrFilter): { sql: string; params: any[] } {
   const params: any[] = [];
@@ -981,7 +970,9 @@ function buildQuery(filter: NostrFilter): { sql: string; params: any[] } {
       sql += " WHERE " + whereConditions.join(" AND ");
     }
 
-    sql += " ORDER BY c.created_at DESC";
+    // Use created_timestamp for discovery queries, created_at for targeted queries
+    const orderByField = isDiscoveryQuery(filter) ? "e.created_timestamp" : "c.created_at";
+    sql += ` ORDER BY ${orderByField} DESC`;
     sql += " LIMIT ?";
     params.push(Math.min(filter.limit || 1000, 5000));
 
@@ -1040,7 +1031,9 @@ function buildQuery(filter: NostrFilter): { sql: string; params: any[] } {
       sql += " WHERE " + whereConditions.join(" AND ");
     }
 
-    sql += " ORDER BY e.created_at DESC";
+    // Use created_timestamp for discovery queries, created_at for targeted queries
+    const orderByField = isDiscoveryQuery(filter) ? "e.created_timestamp" : "e.created_at";
+    sql += ` ORDER BY ${orderByField} DESC`;
     sql += " LIMIT ?";
     params.push(Math.min(filter.limit || 1000, 5000));
 
@@ -1104,7 +1097,9 @@ function buildQuery(filter: NostrFilter): { sql: string; params: any[] } {
     sql += " WHERE " + conditions.join(" AND ");
   }
 
-  sql += " ORDER BY created_at DESC";
+  // Use created_timestamp for discovery queries, created_at for targeted queries
+  const orderByField = isDiscoveryQuery(filter) ? "created_timestamp" : "created_at";
+  sql += ` ORDER BY ${orderByField} DESC`;
   sql += " LIMIT ?";
   params.push(Math.min(filter.limit || 1000, 5000));
 
@@ -3597,6 +3592,59 @@ export default {
     } catch (error) {
       console.error('Scheduled maintenance failed:', error);
     }
+  },
+
+  // Queue consumer for async FTS5 search indexing
+  // Processes events in batches to avoid blocking event writes
+  async queue(batch: MessageBatch<SearchIndexMessage>, env: Env, ctx: ExecutionContext): Promise<void> {
+    console.log(`Processing ${batch.messages.length} search indexing messages`);
+
+    for (const message of batch.messages) {
+      try {
+        const { event } = message.body;
+        const indexingPromises: Promise<void>[] = [];
+
+        // Index based on event kind
+        if (event.kind === 0) {
+          indexingPromises.push(indexUserProfile(env.RELAY_DATABASE, event));
+        }
+
+        if (event.kind === 1) {
+          indexingPromises.push(indexNote(env.RELAY_DATABASE, event));
+        }
+
+        if (event.kind === 34236) {
+          indexingPromises.push(indexVideo(env.RELAY_DATABASE, event));
+        }
+
+        if (event.kind >= 30000 && event.kind <= 30003) {
+          indexingPromises.push(indexList(env.RELAY_DATABASE, event));
+        }
+
+        if (event.kind === 30023) {
+          indexingPromises.push(indexArticle(env.RELAY_DATABASE, event));
+        }
+
+        if (event.kind === 34550) {
+          indexingPromises.push(indexCommunity(env.RELAY_DATABASE, event));
+        }
+
+        // Always index hashtags for all event types
+        indexingPromises.push(indexHashtags(env.RELAY_DATABASE, event));
+
+        // Execute all indexing operations in parallel
+        await Promise.all(indexingPromises);
+
+        // Mark message as successfully processed
+        message.ack();
+      } catch (error) {
+        console.error(`Error indexing event ${message.body.event.id}:`, error);
+        // Retry the message (will go to DLQ after max_retries)
+        message.retry();
+      }
+    }
+
+    console.log(`Completed processing ${batch.messages.length} search indexing messages`);
   }
 };
 

@@ -154,28 +154,31 @@ export class RelayWebSocket implements DurableObject {
   private async getCachedOrQuery(filters: NostrFilter[], bookmark: string): Promise<QueryResult> {
     // Create cache key from filters and bookmark
     const cacheKey = JSON.stringify({ filters, bookmark });
-    
+
     // Check cache
     const cached = this.queryCache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < this.QUERY_CACHE_TTL) {
-      console.log('Returning cached query result');
+      console.log(`[PERF] Query cache HIT (${cached.result.events.length} events)`);
       return cached.result;
     }
-    
+
     // Query database
+    const dbStartTime = Date.now();
     const result = await queryEventsWithArchive(filters, bookmark, this.env);
-    
+    const dbDuration = Date.now() - dbStartTime;
+    console.log(`[PERF] Query cache MISS - DB query took ${dbDuration}ms, returned ${result.events.length} events`);
+
     // Cache the result
-    this.queryCache.set(cacheKey, { 
-      result, 
-      timestamp: Date.now() 
+    this.queryCache.set(cacheKey, {
+      result,
+      timestamp: Date.now()
     });
-    
+
     // Clean up old cache entries if cache is too large
     if (this.queryCache.size > this.MAX_CACHE_SIZE) {
       this.cleanupQueryCache();
     }
-    
+
     return result;
   }
 
@@ -548,6 +551,7 @@ export class RelayWebSocket implements DurableObject {
   }
 
   private async handleReq(session: WebSocketSession, message: any[]): Promise<void> {
+    const reqStartTime = Date.now();
     const [_, subscriptionId, ...filters] = message;
 
     if (!subscriptionId || typeof subscriptionId !== 'string' || subscriptionId === '' || subscriptionId.length > 64) {
@@ -949,7 +953,11 @@ export class RelayWebSocket implements DurableObject {
         }
 
         // Standard Nostr query (no vendor extensions, no search)
+        const queryStartTime = Date.now();
         const result = await this.getCachedOrQuery(filters, session.bookmark);
+        const queryDuration = Date.now() - queryStartTime;
+
+        console.log(`[PERF] REQ ${subscriptionId}: query took ${queryDuration}ms, returned ${result.events.length} events`);
 
         // Update session bookmark
         if (result.bookmark) {
@@ -962,6 +970,8 @@ export class RelayWebSocket implements DurableObject {
         }
 
         // Send EOSE
+        const totalDuration = Date.now() - reqStartTime;
+        console.log(`[PERF] REQ ${subscriptionId}: total ${totalDuration}ms (query: ${queryDuration}ms, send: ${totalDuration - queryDuration}ms)`);
         this.sendEOSE(session.webSocket, subscriptionId);
       }
 
@@ -998,7 +1008,9 @@ export class RelayWebSocket implements DurableObject {
   }
 
   private async broadcastToLocalSessions(event: NostrEvent): Promise<void> {
+    const broadcastStartTime = Date.now();
     let broadcastCount = 0;
+    let subscriptionsLoaded = 0;
 
     // Get all active WebSockets (including hibernated ones)
     const activeWebSockets = this.state.getWebSockets();
@@ -1011,7 +1023,13 @@ export class RelayWebSocket implements DurableObject {
       let session = this.sessions.get(attachment.sessionId);
       if (!session) {
         // Load subscriptions from storage
+        const loadStartTime = Date.now();
         const subscriptions = await this.loadSubscriptions(attachment.sessionId);
+        const loadDuration = Date.now() - loadStartTime;
+        subscriptionsLoaded++;
+        if (loadDuration > 50) {
+          console.log(`[PERF] Slow subscription load: ${loadDuration}ms for session ${attachment.sessionId}`);
+        }
 
         // Recreate minimal session for broadcast
         session = {
@@ -1038,8 +1056,9 @@ export class RelayWebSocket implements DurableObject {
       }
     }
 
-    if (broadcastCount > 0) {
-      console.log(`Event ${event.id} broadcast to ${broadcastCount} local subscriptions on DO ${this.doName}`);
+    const broadcastDuration = Date.now() - broadcastStartTime;
+    if (broadcastCount > 0 || broadcastDuration > 100) {
+      console.log(`[PERF] Event ${event.id} broadcast: ${broadcastDuration}ms to check ${activeWebSockets.length} sockets, loaded ${subscriptionsLoaded} subscription sets, matched ${broadcastCount} subs on DO ${this.doName}`);
     }
   }
 

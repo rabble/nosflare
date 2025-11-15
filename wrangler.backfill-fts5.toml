@@ -1,0 +1,8 @@
+name = "nosflare-backfill-fts5"
+main = "backfill-fts5.ts"
+compatibility_date = "2024-01-01"
+
+[[d1_databases]]
+binding = "RELAY_DATABASE"
+database_name = "nostr-relay"
+database_id = "8beb11fa-ff53-462e-82a4-64a8a7db68a2"

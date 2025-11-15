@@ -4389,25 +4389,15 @@ async function saveEventToD1(event, env) {
         console.error(`Error saving video metrics for ${event.id}:`, videoError.message);
       }
     }
-    if (event.kind === 0) {
-      await indexUserProfile(env.RELAY_DATABASE, event);
+    try {
+      const message = {
+        event,
+        timestamp: Date.now()
+      };
+      await env.SEARCH_INDEX_QUEUE.send(message);
+    } catch (error) {
+      console.error(`Failed to queue search indexing for event ${event.id}:`, error);
     }
-    if (event.kind === 1) {
-      await indexNote(env.RELAY_DATABASE, event);
-    }
-    if (event.kind === 34236) {
-      await indexVideo(env.RELAY_DATABASE, event);
-    }
-    if (event.kind >= 3e4 && event.kind <= 30003) {
-      await indexList(env.RELAY_DATABASE, event);
-    }
-    if (event.kind === 30023) {
-      await indexArticle(env.RELAY_DATABASE, event);
-    }
-    if (event.kind === 34550) {
-      await indexCommunity(env.RELAY_DATABASE, event);
-    }
-    await indexHashtags(env.RELAY_DATABASE, event);
     console.log(`Event ${event.id} saved successfully to D1.`);
     return { success: true, message: "Event received successfully for processing" };
   } catch (error) {
@@ -4479,6 +4469,13 @@ function chunkArray(array, chunkSize) {
   return chunks;
 }
 __name(chunkArray, "chunkArray");
+function isDiscoveryQuery(filter) {
+  const hasNoAuthors = !filter.authors || filter.authors.length === 0;
+  const hasNoIds = !filter.ids || filter.ids.length === 0;
+  const hasNoTimeRange = !filter.since && !filter.until;
+  return hasNoAuthors && hasNoIds && hasNoTimeRange;
+}
+__name(isDiscoveryQuery, "isDiscoveryQuery");
 function buildQuery(filter) {
   const params = [];
   const conditions = [];
@@ -4527,7 +4524,8 @@ function buildQuery(filter) {
     if (whereConditions.length > 0) {
       sql2 += " WHERE " + whereConditions.join(" AND ");
     }
-    sql2 += " ORDER BY c.created_at DESC";
+    const orderByField2 = isDiscoveryQuery(filter) ? "e.created_timestamp" : "c.created_at";
+    sql2 += ` ORDER BY ${orderByField2} DESC`;
     sql2 += " LIMIT ?";
     params.push(Math.min(filter.limit || 1e3, 5e3));
     return { sql: sql2, params };
@@ -4571,7 +4569,8 @@ function buildQuery(filter) {
     if (whereConditions.length > 0) {
       sql2 += " WHERE " + whereConditions.join(" AND ");
     }
-    sql2 += " ORDER BY e.created_at DESC";
+    const orderByField2 = isDiscoveryQuery(filter) ? "e.created_timestamp" : "e.created_at";
+    sql2 += ` ORDER BY ${orderByField2} DESC`;
     sql2 += " LIMIT ?";
     params.push(Math.min(filter.limit || 1e3, 5e3));
     return { sql: sql2, params };
@@ -4621,7 +4620,8 @@ function buildQuery(filter) {
   if (conditions.length > 0) {
     sql += " WHERE " + conditions.join(" AND ");
   }
-  sql += " ORDER BY created_at DESC";
+  const orderByField = isDiscoveryQuery(filter) ? "created_timestamp" : "created_at";
+  sql += ` ORDER BY ${orderByField} DESC`;
   sql += " LIMIT ?";
   params.push(Math.min(filter.limit || 1e3, 5e3));
   return { sql, params };
@@ -6972,6 +6972,42 @@ var relay_worker_default = {
     } catch (error) {
       console.error("Scheduled maintenance failed:", error);
     }
+  },
+  // Queue consumer for async FTS5 search indexing
+  // Processes events in batches to avoid blocking event writes
+  async queue(batch, env, ctx) {
+    console.log(`Processing ${batch.messages.length} search indexing messages`);
+    for (const message of batch.messages) {
+      try {
+        const { event } = message.body;
+        const indexingPromises = [];
+        if (event.kind === 0) {
+          indexingPromises.push(indexUserProfile(env.RELAY_DATABASE, event));
+        }
+        if (event.kind === 1) {
+          indexingPromises.push(indexNote(env.RELAY_DATABASE, event));
+        }
+        if (event.kind === 34236) {
+          indexingPromises.push(indexVideo(env.RELAY_DATABASE, event));
+        }
+        if (event.kind >= 3e4 && event.kind <= 30003) {
+          indexingPromises.push(indexList(env.RELAY_DATABASE, event));
+        }
+        if (event.kind === 30023) {
+          indexingPromises.push(indexArticle(env.RELAY_DATABASE, event));
+        }
+        if (event.kind === 34550) {
+          indexingPromises.push(indexCommunity(env.RELAY_DATABASE, event));
+        }
+        indexingPromises.push(indexHashtags(env.RELAY_DATABASE, event));
+        await Promise.all(indexingPromises);
+        message.ack();
+      } catch (error) {
+        console.error(`Error indexing event ${message.body.event.id}:`, error);
+        message.retry();
+      }
+    }
+    console.log(`Completed processing ${batch.messages.length} search indexing messages`);
   }
 };
 
@@ -7499,10 +7535,13 @@ var _RelayWebSocket = class _RelayWebSocket {
     const cacheKey = JSON.stringify({ filters, bookmark });
     const cached = this.queryCache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < this.QUERY_CACHE_TTL) {
-      console.log("Returning cached query result");
+      console.log(`[PERF] Query cache HIT (${cached.result.events.length} events)`);
       return cached.result;
     }
+    const dbStartTime = Date.now();
     const result = await queryEventsWithArchive(filters, bookmark, this.env);
+    const dbDuration = Date.now() - dbStartTime;
+    console.log(`[PERF] Query cache MISS - DB query took ${dbDuration}ms, returned ${result.events.length} events`);
     this.queryCache.set(cacheKey, {
       result,
       timestamp: Date.now()
@@ -7773,6 +7812,7 @@ var _RelayWebSocket = class _RelayWebSocket {
     }
   }
   async handleReq(session, message) {
+    const reqStartTime = Date.now();
     const [_, subscriptionId, ...filters] = message;
     if (!subscriptionId || typeof subscriptionId !== "string" || subscriptionId === "" || subscriptionId.length > 64) {
       this.sendError(session.webSocket, "Invalid subscription ID: must be non-empty string of max 64 chars");
@@ -8076,13 +8116,18 @@ var _RelayWebSocket = class _RelayWebSocket {
             return;
           }
         }
+        const queryStartTime = Date.now();
         const result = await this.getCachedOrQuery(filters, session.bookmark);
+        const queryDuration = Date.now() - queryStartTime;
+        console.log(`[PERF] REQ ${subscriptionId}: query took ${queryDuration}ms, returned ${result.events.length} events`);
         if (result.bookmark) {
           session.bookmark = result.bookmark;
         }
         for (const event of result.events) {
           this.sendEvent(session.webSocket, subscriptionId, event);
         }
+        const totalDuration = Date.now() - reqStartTime;
+        console.log(`[PERF] REQ ${subscriptionId}: total ${totalDuration}ms (query: ${queryDuration}ms, send: ${totalDuration - queryDuration}ms)`);
         this.sendEOSE(session.webSocket, subscriptionId);
       }
     } catch (error) {
@@ -8109,7 +8154,9 @@ var _RelayWebSocket = class _RelayWebSocket {
     await this.broadcastToOtherDOs(event);
   }
   async broadcastToLocalSessions(event) {
+    const broadcastStartTime = Date.now();
     let broadcastCount = 0;
+    let subscriptionsLoaded = 0;
     const activeWebSockets = this.state.getWebSockets();
     for (const ws of activeWebSockets) {
       const attachment = ws.deserializeAttachment();
@@ -8117,7 +8164,13 @@ var _RelayWebSocket = class _RelayWebSocket {
         continue;
       let session = this.sessions.get(attachment.sessionId);
       if (!session) {
+        const loadStartTime = Date.now();
         const subscriptions = await this.loadSubscriptions(attachment.sessionId);
+        const loadDuration = Date.now() - loadStartTime;
+        subscriptionsLoaded++;
+        if (loadDuration > 50) {
+          console.log(`[PERF] Slow subscription load: ${loadDuration}ms for session ${attachment.sessionId}`);
+        }
         session = {
           id: attachment.sessionId,
           webSocket: ws,
@@ -8140,8 +8193,9 @@ var _RelayWebSocket = class _RelayWebSocket {
         }
       }
     }
-    if (broadcastCount > 0) {
-      console.log(`Event ${event.id} broadcast to ${broadcastCount} local subscriptions on DO ${this.doName}`);
+    const broadcastDuration = Date.now() - broadcastStartTime;
+    if (broadcastCount > 0 || broadcastDuration > 100) {
+      console.log(`[PERF] Event ${event.id} broadcast: ${broadcastDuration}ms to check ${activeWebSockets.length} sockets, loaded ${subscriptionsLoaded} subscription sets, matched ${broadcastCount} subs on DO ${this.doName}`);
     }
   }
   async broadcastToOtherDOs(event) {
