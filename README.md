@@ -75,6 +75,41 @@ Search across 7 different entity types:
 
 For complete documentation on search features, query syntax, and API examples, see **[docs/SEARCH.md](/docs/SEARCH.md)**.
 
+## Prometheus Metrics
+
+Nosflare includes built-in Prometheus-compatible metrics for monitoring relay performance and usage:
+
+### Metrics Tracked
+
+- **Client Messages by Verb** - REQ, EVENT, CLOSE messages from clients
+- **Relay Messages by Verb** - EVENT, EOSE, OK, NOTICE, CLOSED messages to clients  
+- **Events by Kind** - Count of stored events categorized by Nostr kind (0, 1, 34236, etc.)
+
+### Features
+
+- **Durable Object Storage** - Metrics persist across Worker restarts using a dedicated MetricsDO
+- **HTTP Basic Auth** - Secure `/metrics` endpoint with configurable credentials
+- **Fire-and-Forget Tracking** - Async metrics collection with zero performance impact
+- **Prometheus Compatible** - Standard exposition format for easy integration
+
+### Quick Setup
+
+1. Set environment variables in `wrangler.toml`:
+```toml
+[vars]
+METRICS_USERNAME = "metrics"
+METRICS_PASSWORD = "your-secure-password"
+```
+
+2. Access metrics:
+```bash
+curl -u metrics:password https://relay.divine.video/metrics
+```
+
+3. Configure Prometheus scraper (see [docs/METRICS.md](/docs/METRICS.md))
+
+For complete documentation, configuration examples, and Grafana dashboard queries, see **[docs/METRICS.md](/docs/METRICS.md)**.
+
 ## Getting Started
 
 ### Prerequisites

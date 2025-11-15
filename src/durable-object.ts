@@ -16,6 +16,7 @@ import type { VideoFilter, IntComparison } from './video-queries';
 import { metricsCollector } from './query-metrics';
 import { searchUsers, searchHashtags, searchVideos, searchNotes, searchLists, searchArticles, searchCommunities, searchUnified } from './search';
 import { parseSearchQuery } from './search-parser';
+import { trackMetricAsync } from './metrics-tracker';
 
 // Session attachment data structure
 interface SessionAttachment {
@@ -419,6 +420,9 @@ export class RelayWebSocket implements DurableObject {
 
     const [type, ...args] = message;
 
+    // Track client message metric (fire and forget)
+    trackMetricAsync(this.env, 'client', type);
+
     try {
       switch (type) {
         case 'EVENT':
@@ -528,6 +532,9 @@ export class RelayWebSocket implements DurableObject {
       const result = await processEvent(event, session.id, this.env);
 
       if (result.success) {
+        // Track event by kind (fire and forget)
+        trackMetricAsync(this.env, 'event', event.kind);
+        
         // Send OK to the sender
         this.sendOK(session.webSocket, event.id, true, result.message);
 
@@ -1165,6 +1172,7 @@ export class RelayWebSocket implements DurableObject {
     try {
       const okMessage = ['OK', eventId, status, message || ''];
       ws.send(JSON.stringify(okMessage));
+      trackMetricAsync(this.env, 'relay', 'OK');
     } catch (error) {
       console.error('Error sending OK:', error);
     }
@@ -1174,6 +1182,7 @@ export class RelayWebSocket implements DurableObject {
     try {
       const noticeMessage = ['NOTICE', message];
       ws.send(JSON.stringify(noticeMessage));
+      trackMetricAsync(this.env, 'relay', 'NOTICE');
     } catch (error) {
       console.error('Error sending NOTICE:', error);
     }
@@ -1183,6 +1192,7 @@ export class RelayWebSocket implements DurableObject {
     try {
       const eoseMessage = ['EOSE', subscriptionId];
       ws.send(JSON.stringify(eoseMessage));
+      trackMetricAsync(this.env, 'relay', 'EOSE');
     } catch (error) {
       console.error('Error sending EOSE:', error);
     }
@@ -1192,6 +1202,7 @@ export class RelayWebSocket implements DurableObject {
     try {
       const closedMessage = ['CLOSED', subscriptionId, message];
       ws.send(JSON.stringify(closedMessage));
+      trackMetricAsync(this.env, 'relay', 'CLOSED');
     } catch (error) {
       console.error('Error sending CLOSED:', error);
     }
@@ -1201,6 +1212,7 @@ export class RelayWebSocket implements DurableObject {
     try {
       const eventMessage = ['EVENT', subscriptionId, event];
       ws.send(JSON.stringify(eventMessage));
+      trackMetricAsync(this.env, 'relay', 'EVENT');
     } catch (error) {
       console.error('Error sending EVENT:', error);
     }
