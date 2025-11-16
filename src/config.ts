@@ -30,7 +30,7 @@ export function getRelayInfo(env: Env): RelayInfo {
     contact: isStaging ? "staging@divine.video" : "relay@divine.video",
     supported_nips: [1, 2, 4, 5, 9, 11, 12, 15, 16, 17, 20, 22, 33, 40, 50],
     software: "https://github.com/Spl0itable/nosflare",
-    version: "7.4.12",
+    version: "7.4.14",
     icon: "https://divine.video/logo.png",
 
     // Relay limitations
@@ -77,7 +77,7 @@ export const relayInfo: RelayInfo = {
   contact: "relay@divine.video",
   supported_nips: [1, 2, 4, 5, 9, 11, 12, 15, 16, 17, 20, 22, 33, 40, 50],
   software: "https://github.com/Spl0itable/nosflare",
-  version: "7.4.11",
+  version: "7.4.14",
   icon: "https://divine.video/logo.png",
 
   limitation: {

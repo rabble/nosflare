@@ -3,29 +3,29 @@
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    
+
     if (url.pathname === '/') {
       return new Response(getMigrationHTML(), {
         headers: { 'Content-Type': 'text/html' }
       });
     }
-    
+
     if (url.pathname === '/api/migrate' && request.method === 'POST') {
       return startMigration(env);
     }
-    
+
     if (url.pathname === '/api/reset' && request.method === 'POST') {
       return resetMigration(env);
     }
-    
+
     if (url.pathname === '/api/process-batch' && request.method === 'POST') {
       return processSingleBatch(env);
     }
-    
+
     if (url.pathname === '/api/status' && request.method === 'GET') {
       return getMigrationStatus(env);
     }
-    
+
     return new Response('Not found', { status: 404 });
   }
 };
@@ -36,12 +36,15 @@ async function resetMigration(env) {
     await env.D1_DB.prepare(
       "DELETE FROM system_config WHERE key = 'migration_state'"
     ).run();
-    
+
+    // Delete the migration queue from R2
+    await env.R2_BUCKET.delete('migration_queue.json');
+
     return new Response(JSON.stringify({
       success: true,
       message: 'Migration state reset successfully'
     }), {
-      headers: { 
+      headers: {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*'
       }
@@ -51,7 +54,7 @@ async function resetMigration(env) {
       error: error.message
     }), {
       status: 500,
-      headers: { 
+      headers: {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*'
       }
@@ -66,17 +69,17 @@ async function startMigration(env) {
     const existingState = await env.D1_DB.prepare(
       "SELECT value FROM system_config WHERE key = 'migration_state' LIMIT 1"
     ).first();
-    
+
     if (existingState) {
       const state = JSON.parse(existingState.value);
-      
+
       if (state.inProgress) {
         return new Response(JSON.stringify({
           error: 'Migration already in progress',
           hint: 'Use the Reset button if you need to start over'
         }), {
           status: 400,
-          headers: { 
+          headers: {
             'Content-Type': 'application/json',
             'Access-Control-Allow-Origin': '*'
           }
@@ -97,13 +100,12 @@ async function startMigration(env) {
       startTime: Date.now(),
       lastUpdate: Date.now(),
       currentBatch: 0,
-      totalBatches: 0,
       sections: {
         events: 0,
         paidPubkeys: 0,
         hashes: 0
-      },
-      queue: []
+      }
+      // No queue or totalBatches for events
     };
 
     await env.D1_DB.prepare(
@@ -115,7 +117,7 @@ async function startMigration(env) {
       message: 'Migration started',
       needsProcessing: true
     }), {
-      headers: { 
+      headers: {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*'
       }
@@ -127,7 +129,7 @@ async function startMigration(env) {
       error: error.message
     }), {
       status: 500,
-      headers: { 
+      headers: {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*'
       }
@@ -148,7 +150,7 @@ async function processSingleBatch(env) {
         error: 'No migration in progress'
       }), {
         status: 400,
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
           'Access-Control-Allow-Origin': '*'
         }
@@ -162,7 +164,7 @@ async function processSingleBatch(env) {
         complete: true,
         message: 'Migration already completed'
       }), {
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
           'Access-Control-Allow-Origin': '*'
         }
@@ -219,7 +221,7 @@ async function processSingleBatch(env) {
       },
       ...result
     }), {
-      headers: { 
+      headers: {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*'
       }
@@ -231,7 +233,7 @@ async function processSingleBatch(env) {
       error: error.message
     }), {
       status: 500,
-      headers: { 
+      headers: {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*'
       }
@@ -242,53 +244,76 @@ async function processSingleBatch(env) {
 // Scan items in R2
 async function scanItems(env, state) {
   console.log('Scanning R2 bucket...');
-  
+
   const listOptions = {
     prefix: 'events/',
     limit: 1000
   };
-  
+
   if (state.cursor && typeof state.cursor === 'string') {
     listOptions.cursor = state.cursor;
   }
-  
+
   const listed = await env.R2_BUCKET.list(listOptions);
+  const events = [];
 
   for (const object of listed.objects) {
     if (object.key.startsWith('events/event:')) {
-      state.queue.push({
+      events.push({
         type: 'event',
         key: object.key
       });
     }
   }
 
+  // Get existing queue from R2 (if any)
+  let existingQueue = [];
+  try {
+    const queueObj = await env.R2_BUCKET.get('migration_queue.json');
+    if (queueObj) {
+      existingQueue = JSON.parse(await queueObj.text());
+    }
+  } catch (error) {
+    // Queue doesn't exist yet
+  }
+
+  // Add new events to existing queue
+  const newQueue = [...existingQueue, ...events];
+
+  // Save updated queue to R2
+  await env.R2_BUCKET.put('migration_queue.json', JSON.stringify(newQueue), {
+    customMetadata: {
+      totalEvents: String(newQueue.length),
+      lastUpdated: String(Date.now())
+    }
+  });
+
   if (listed.truncated && listed.cursor) {
     state.cursor = listed.cursor;
-    console.log(`Found ${state.queue.length} items so far...`);
-    return { scanning: true, found: state.queue.length };
+    console.log(`Scanning... found ${newQueue.length} items so far...`);
+    return { scanning: true, found: newQueue.length };
   } else {
     delete state.cursor;
-    console.log(`Scan complete. Found ${state.queue.length} events`);
-    state.sections.events = state.queue.length;
+    console.log(`Scan complete. Found ${newQueue.length} events`);
+    state.sections.events = newQueue.length;
     state.phase = 'migrating_paid_pubkeys';
-    return { scanComplete: true, totalEvents: state.queue.length };
+    return { scanComplete: true, totalEvents: newQueue.length };
   }
 }
 
 // Migrate paid pubkeys in batches
 async function migratePaidPubkeysBatch(env, state) {
   console.log('Migrating paid pubkeys batch...');
-  
+
   const listOptions = {
     prefix: 'paid-pubkeys/',
     limit: 50
   };
-  
+
   if (state.cursor && typeof state.cursor === 'string') {
     listOptions.cursor = state.cursor;
   }
-  
+
   const listed = await env.R2_BUCKET.list(listOptions);
 
   let count = 0;
@@ -332,107 +357,134 @@ async function migratePaidPubkeysBatch(env, state) {
 
 // Migrate events in batches
 async function migrateEventsBatch(env, state) {
-  const BATCH_SIZE = 50;
-  const startIdx = state.currentBatch * BATCH_SIZE;
-  const endIdx = Math.min(startIdx + BATCH_SIZE, state.queue.length);
-  
-  console.log(`Processing events batch ${state.currentBatch + 1}/${state.totalBatches}`);
+  try {
+    // Get queue from R2
+    const queueObj = await env.R2_BUCKET.get('migration_queue.json');
+    if (!queueObj) {
+      console.log('No migration queue found');
+      return { migrationComplete: true };
+    }
 
-  const batch = state.queue.slice(startIdx, endIdx);
-  let migratedCount = 0;
-  
-  for (const item of batch) {
-    try {
-      const eventObject = await env.R2_BUCKET.get(item.key);
-      if (!eventObject) {
-        state.failed++;
-        continue;
-      }
+    const queue = JSON.parse(await queueObj.text());
+    if (queue.length === 0) {
+      console.log('Migration queue is empty');
+      return { migrationComplete: true };
+    }
 
-      const event = JSON.parse(await eventObject.text());
+    const BATCH_SIZE = 50;
+    const startIdx = state.currentBatch * BATCH_SIZE;
+    const endIdx = Math.min(startIdx + BATCH_SIZE, queue.length);
 
-      // Check if event already exists
-      const existing = await env.D1_DB.prepare(
-        "SELECT id FROM events WHERE id = ? LIMIT 1"
-      ).bind(event.id).first();
+    console.log(`Processing events batch ${state.currentBatch + 1}/${Math.ceil(queue.length / BATCH_SIZE)}`);
 
-      if (!existing) {
-        // Insert event and tags
-        const statements = [];
+    const batch = queue.slice(startIdx, endIdx);
+    let migratedCount = 0;
 
-        statements.push(
-          env.D1_DB.prepare(
-            `INSERT INTO events (id, pubkey, created_at, kind, tags, content, sig)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`
-          ).bind(
-            event.id,
-            event.pubkey,
-            event.created_at,
-            event.kind,
-            JSON.stringify(event.tags),
-            event.content,
-            event.sig
-          )
-        );
-
-        // Insert tags
-        for (const tag of event.tags) {
-          const [tagName, tagValue] = tag;
-          if (tagName && tagValue) {
-            statements.push(
-              env.D1_DB.prepare(
-                `INSERT INTO tags (event_id, tag_name, tag_value)
-                 VALUES (?, ?, ?)`
-              ).bind(event.id, tagName, tagValue)
-            );
-          }
+    for (const item of batch) {
+      try {
+        const eventObject = await env.R2_BUCKET.get(item.key);
+        if (!eventObject) {
+          state.failed++;
+          continue;
         }
 
-        await env.D1_DB.batch(statements);
+        const event = JSON.parse(await eventObject.text());
+
+        // Check if event already exists
+        const existing = await env.D1_DB.prepare(
+          "SELECT id FROM events WHERE id = ? LIMIT 1"
+        ).bind(event.id).first();
+
+        if (!existing) {
+          // Insert event and tags
+          const statements = [];
+
+          statements.push(
+            env.D1_DB.prepare(
+              `INSERT INTO events (id, pubkey, created_at, kind, tags, content, sig)
+              VALUES (?, ?, ?, ?, ?, ?, ?)`
+            ).bind(
+              event.id,
+              event.pubkey,
+              event.created_at,
+              event.kind,
+              JSON.stringify(event.tags),
+              event.content,
+              event.sig
+            )
+          );
+
+          // Insert tags
+          for (const tag of event.tags) {
+            const [tagName, tagValue] = tag;
+            if (tagName && tagValue) {
+              statements.push(
+                env.D1_DB.prepare(
+                  `INSERT INTO tags (event_id, tag_name, tag_value)
+                  VALUES (?, ?, ?)`
+                ).bind(event.id, tagName, tagValue)
+              );
+            }
+          }
+
+          await env.D1_DB.batch(statements);
+        }
+
+        state.migrated++;
+        migratedCount++;
+      } catch (error) {
+        console.error(`Error migrating event:`, error);
+        state.failed++;
       }
-
-      state.migrated++;
-      migratedCount++;
-    } catch (error) {
-      console.error(`Error migrating event:`, error);
-      state.failed++;
     }
-  }
 
-  state.currentBatch++;
+    // Update queue - remove processed items
+    const remainingQueue = queue.slice(endIdx);
+    await env.R2_BUCKET.put('migration_queue.json', JSON.stringify(remainingQueue), {
+      customMetadata: {
+        totalEvents: String(remainingQueue.length),
+        lastUpdated: String(Date.now())
+      }
+    });
 
-  if (state.currentBatch >= state.totalBatches) {
-    console.log('Events migration complete');
-    state.phase = 'migrating_hashes';
-    delete state.cursor;
-    return { phaseComplete: true, migratedInBatch: migratedCount };
-  } else {
-    return { 
-      migratedInBatch: migratedCount, 
-      currentBatch: state.currentBatch, 
-      totalBatches: state.totalBatches 
-    };
+    state.currentBatch++;
+
+    if (remainingQueue.length === 0) {
+      console.log('Events migration complete');
+      state.phase = 'migrating_hashes';
+      state.currentBatch = 0;
+      return { phaseComplete: true, migratedInBatch: migratedCount };
+    } else {
+      return {
+        migratedInBatch: migratedCount,
+        currentBatch: state.currentBatch,
+        totalBatches: Math.ceil(remainingQueue.length / BATCH_SIZE)
+      };
+    }
+  } catch (error) {
+    console.error('Error migrating events batch:', error);
+    throw error;
   }
 }
 
 // Migrate content hashes in batches
 async function migrateHashesBatch(env, state) {
   console.log('Migrating content hashes batch...');
-  
+
   const listOptions = {
     prefix: 'hashes/',
     limit: 100
   };
-  
+
   if (state.cursor && typeof state.cursor === 'string') {
     listOptions.cursor = state.cursor;
   }
-  
+
   const listed = await env.R2_BUCKET.list(listOptions);
 
   let count = 0;
   let skipped = 0;
-  
+
   for (const object of listed.objects) {
     try {
       // Get the object with metadata
@@ -444,12 +496,12 @@ async function migrateHashesBatch(env, state) {
       }
 
       let hashData = {};
-      
+
       // First check if there's custom metadata
       if (dataObject.customMetadata) {
         hashData = { ...dataObject.customMetadata };
       }
-      
+
       // If body exists, try to parse it and merge with metadata
       const text = await dataObject.text();
       if (text && text.trim()) {
@@ -460,7 +512,7 @@ async function migrateHashesBatch(env, state) {
           console.warn(`Failed to parse body for ${object.key}, using metadata only`);
         }
       }
-      
+
       // Extract hash parts from the key
       const keyParts = object.key.split('/');
       if (keyParts.length < 2) {
@@ -468,11 +520,11 @@ async function migrateHashesBatch(env, state) {
         skipped++;
         continue;
       }
-      
+
       const hashParts = keyParts[1];
-      
+
       let hash, pubkey;
-      
+
       if (hashParts.includes(':')) {
         const parts = hashParts.split(':');
         if (parts.length === 2) {
@@ -488,15 +540,15 @@ async function migrateHashesBatch(env, state) {
       }
 
       let eventId = hashData.eventId || hashData.event_id || hashData.id;
-      
+
       if (!eventId && hashData.id && hashData.sig) {
         eventId = hashData.id;
-        
+
         if (!pubkey && hashData.pubkey) {
           pubkey = hashData.pubkey;
         }
       }
-      
+
       // Validate all required fields
       if (!hash) {
         console.warn(`Missing hash for key: ${object.key}`);
@@ -516,7 +568,7 @@ async function migrateHashesBatch(env, state) {
         const event = await env.D1_DB.prepare(
           "SELECT pubkey FROM events WHERE id = ? LIMIT 1"
         ).bind(eventId).first();
-        
+
         if (event) {
           pubkey = event.pubkey;
         } else {
@@ -526,8 +578,8 @@ async function migrateHashesBatch(env, state) {
         }
       }
 
-      const createdAt = hashData.timestamp || hashData.created_at || 
-                       (object.uploaded ? Math.floor(object.uploaded.getTime() / 1000) : Math.floor(Date.now() / 1000));
+      const createdAt = hashData.timestamp || hashData.created_at ||
+        (object.uploaded ? Math.floor(object.uploaded.getTime() / 1000) : Math.floor(Date.now() / 1000));
 
       // Insert the hash record
       await env.D1_DB.prepare(
@@ -539,10 +591,10 @@ async function migrateHashesBatch(env, state) {
         pubkey,
         createdAt
       ).run();
-      
+
       count++;
       state.migrated++;
-      
+
     } catch (error) {
       console.error(`Error migrating content hash ${object.key}:`, error);
       console.error('Error details:', error.message);
@@ -551,7 +603,7 @@ async function migrateHashesBatch(env, state) {
   }
 
   state.sections.hashes += count;
-  
+
   // Update total when we have processed some hashes
   if (count > 0 && !state.hashesTotalUpdated) {
     // Try to estimate total hashes if this is first batch
@@ -571,12 +623,12 @@ async function migrateHashesBatch(env, state) {
     state.phase = 'complete';
     state.inProgress = false;
     delete state.cursor;
-    
+
     // Adjust total to actual count
     if (state.hashesTotalUpdated) {
       state.total = state.sections.paidPubkeys + state.sections.events + state.sections.hashes;
     }
-    
+
     return { migrationComplete: true, totalHashes: state.sections.hashes };
   }
 }
@@ -591,7 +643,7 @@ async function getMigrationStatus(env) {
     if (result) {
       const state = JSON.parse(result.value);
       const percent = state.total > 0 ? Math.floor((state.migrated + state.failed) / state.total * 100) : 0;
-      
+
       return new Response(JSON.stringify({
         inProgress: state.inProgress,
         complete: !state.inProgress && state.phase === 'complete',
@@ -605,7 +657,7 @@ async function getMigrationStatus(env) {
           sections: state.sections
         }
       }), {
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
           'Access-Control-Allow-Origin': '*'
         }
@@ -618,7 +670,7 @@ async function getMigrationStatus(env) {
       percent: 0,
       stats: { total: 0, migrated: 0, failed: 0 }
     }), {
-      headers: { 
+      headers: {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*'
       }
@@ -629,7 +681,7 @@ async function getMigrationStatus(env) {
       error: error.message
     }), {
       status: 500,
-      headers: { 
+      headers: {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*'
       }

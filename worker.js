@@ -77,7 +77,7 @@ function getRelayInfo(env) {
     contact: isStaging ? "staging@divine.video" : "relay@divine.video",
     supported_nips: [1, 2, 4, 5, 9, 11, 12, 15, 16, 17, 20, 22, 33, 40, 50],
     software: "https://github.com/Spl0itable/nosflare",
-    version: "7.4.12",
+    version: "7.4.14",
     icon: "https://divine.video/logo.png",
     // Relay limitations
     limitation: {
@@ -122,7 +122,7 @@ var relayInfo = {
   contact: "relay@divine.video",
   supported_nips: [1, 2, 4, 5, 9, 11, 12, 15, 16, 17, 20, 22, 33, 40, 50],
   software: "https://github.com/Spl0itable/nosflare",
-  version: "7.4.11",
+  version: "7.4.14",
   icon: "https://divine.video/logo.png",
   limitation: {
     payment_required: PAY_TO_RELAY_ENABLED,
@@ -7804,6 +7804,10 @@ var _RelayWebSocket = class _RelayWebSocket {
     // Payment status cache
     this.paymentCache = /* @__PURE__ */ new Map();
     this.PAYMENT_CACHE_TTL = 6e4;
+    // Alarm and cleanup configuration
+    this.IDLE_TIMEOUT = 5 * 60 * 1e3;
+    // 5 minutes
+    this.lastActivityTime = Date.now();
     this.state = state;
     this.sessions = /* @__PURE__ */ new Map();
     this.env = env;
@@ -7813,6 +7817,72 @@ var _RelayWebSocket = class _RelayWebSocket {
     this.processedEvents = /* @__PURE__ */ new Map();
     this.queryCache = /* @__PURE__ */ new Map();
     this.paymentCache = /* @__PURE__ */ new Map();
+    this.lastActivityTime = Date.now();
+  }
+  // Alarm handler - called when scheduled alarm fires
+  async alarm() {
+    console.log(`Alarm triggered for DO ${this.doName}`);
+    const now = Date.now();
+    const idleTime = now - this.lastActivityTime;
+    const activeWebSockets = this.state.getWebSockets();
+    const activeCount = activeWebSockets.length;
+    console.log(`DO ${this.doName} - Active WebSockets: ${activeCount}, Idle time: ${idleTime}ms`);
+    if (activeCount === 0 && idleTime >= this.IDLE_TIMEOUT) {
+      console.log(`Cleaning up idle DO ${this.doName}`);
+      await this.cleanup();
+      return;
+    }
+    const nextAlarm = now + this.IDLE_TIMEOUT;
+    await this.state.storage.setAlarm(nextAlarm);
+    console.log(`Next alarm scheduled for DO ${this.doName} in ${this.IDLE_TIMEOUT}ms`);
+  }
+  // Cleanup method to clear caches and sessions
+  async cleanup() {
+    console.log(`Running cleanup for DO ${this.doName}`);
+    this.queryCache.clear();
+    this.paymentCache.clear();
+    this.processedEvents.clear();
+    this.sessions.clear();
+    await this.cleanupOrphanedSubscriptions();
+    console.log(`Cleanup complete for DO ${this.doName}`);
+  }
+  // Remove orphaned subscription data from storage
+  async cleanupOrphanedSubscriptions() {
+    try {
+      const allKeys = await this.state.storage.list();
+      const activeWebSockets = this.state.getWebSockets();
+      const activeSessionIds = /* @__PURE__ */ new Set();
+      for (const ws of activeWebSockets) {
+        const attachment = ws.deserializeAttachment();
+        if (attachment) {
+          activeSessionIds.add(attachment.sessionId);
+        }
+      }
+      const keysToDelete = [];
+      for (const [key] of allKeys) {
+        if (key.startsWith("subs:")) {
+          const sessionId = key.substring(5);
+          if (!activeSessionIds.has(sessionId)) {
+            keysToDelete.push(key);
+          }
+        }
+      }
+      if (keysToDelete.length > 0) {
+        await this.state.storage.delete(keysToDelete);
+        console.log(`Cleaned up ${keysToDelete.length} orphaned subscription entries`);
+      }
+    } catch (error) {
+      console.error("Error cleaning up orphaned subscriptions:", error);
+    }
+  }
+  // Schedule alarm if one doesn't exist
+  async scheduleAlarmIfNeeded() {
+    const existingAlarm = await this.state.storage.getAlarm();
+    if (existingAlarm === null) {
+      const alarmTime = Date.now() + this.IDLE_TIMEOUT;
+      await this.state.storage.setAlarm(alarmTime);
+      console.log(`Scheduled first alarm for DO ${this.doName}`);
+    }
   }
   // Storage helper methods for subscriptions
   async saveSubscriptions(sessionId, subscriptions) {
@@ -7937,6 +8007,8 @@ var _RelayWebSocket = class _RelayWebSocket {
     };
     server.serializeAttachment(attachment);
     this.state.acceptWebSocket(server);
+    this.lastActivityTime = Date.now();
+    await this.scheduleAlarmIfNeeded();
     console.log(`New WebSocket session: ${sessionId} on DO ${this.doName}`);
     return new Response(null, {
       status: 101,
@@ -7950,6 +8022,7 @@ var _RelayWebSocket = class _RelayWebSocket {
   }
   // WebSocket Hibernation API handler methods
   async webSocketMessage(ws, message) {
+    this.lastActivityTime = Date.now();
     const attachment = ws.deserializeAttachment();
     if (!attachment) {
       console.error("No session attachment found");
